@@ -1,7 +1,7 @@
 """Call lifecycle orchestration.
 
 Flow: auth → SIP register → dial API → wait for INVITE → SDP negotiation
-      (via aiortc WebRTC) → media setup → Grok bridge → audio pipeline →
+      (via aiortc WebRTC) → media setup → AI bridge → audio pipeline →
       wait for BYE → cleanup.
 """
 
@@ -10,9 +10,9 @@ import logging
 from typing import Optional
 
 from . import config
+from .ai_bridge import AIBridge
 from .auth import check_registration, fetch_sip_credentials, get_session, initiate_dial
 from .audio_pipeline import AudioPipeline
-from .grok_bridge import GrokBridge
 from .media_handler import WebRTCMediaHandler, parse_sdp_media
 from .sip_client import SipClient
 from .sip_messages import SipMessage
@@ -29,7 +29,7 @@ class CallManager:
 
         self.sip: Optional[SipClient] = None
         self.media: Optional[WebRTCMediaHandler] = None
-        self.grok: Optional[GrokBridge] = None
+        self.bridge: Optional[AIBridge] = None
         self.pipeline: Optional[AudioPipeline] = None
 
         self._call_ended: Optional[asyncio.Event] = None
@@ -126,25 +126,36 @@ class CallManager:
             await self.sip.send_200_ok(invite, sdp_body=sdp_answer)
             logger.info("Sent 200 OK with WebRTC SDP answer")
 
-            # Phase 6: Connect to Grok
-            logger.info("=== Phase 6: Grok Realtime ===")
-            self.grok = GrokBridge()
-            await self.grok.connect()
-            await self.grok.configure_session()
+            # Phase 6: Connect to AI backend
+            logger.info(f"=== Phase 6: AI Backend ({config.AI_BACKEND}) ===")
+            # Look up patient name from destination number
+            dest_digits = self.destination.lstrip("+1")
+            patient_name = config.PATIENT_NAMES.get(dest_digits, "the patient")
+            logger.info(f"Patient: {patient_name}")
 
-            # Start Grok message loop in background
-            grok_task = asyncio.create_task(self.grok.run())
+            if config.AI_BACKEND == "elevenlabs":
+                from .elevenlabs_bridge import ElevenLabsBridge
+                self.bridge = ElevenLabsBridge()
+            else:
+                from .grok_bridge import GrokBridge
+                self.bridge = GrokBridge()
+
+            await self.bridge.connect()
+            await self.bridge.configure_session(patient_name=patient_name)
+
+            # Start AI message loop in background
+            bridge_task = asyncio.create_task(self.bridge.run())
 
             # Wait for session to be configured
             try:
-                await asyncio.wait_for(self.grok._session_ready.wait(), timeout=10)
+                await asyncio.wait_for(self.bridge._session_ready.wait(), timeout=10)
             except asyncio.TimeoutError:
-                logger.warning("Grok session.updated not received in 10s, proceeding anyway")
+                logger.warning("AI session not ready in 10s, proceeding anyway")
 
             # Phase 7: Start audio pipeline
             logger.info("=== Phase 7: Audio Pipeline ===")
-            logger.info("Grok session ready + media established — starting audio pipeline")
-            self.pipeline = AudioPipeline(self.media, self.grok)
+            logger.info("AI session ready + media established — starting audio pipeline")
+            self.pipeline = AudioPipeline(self.media, self.bridge)
             await self.pipeline.start()
             logger.info("Audio pipeline active — call is live!")
 
@@ -154,7 +165,7 @@ class CallManager:
             logger.info("Call ended")
 
             # Cleanup
-            await self._cleanup(sip_task, grok_task)
+            await self._cleanup(sip_task, bridge_task)
 
         except Exception as e:
             logger.error(f"Call failed: {e}", exc_info=True)
@@ -178,8 +189,8 @@ class CallManager:
         if self.pipeline:
             await self.pipeline.stop()
 
-        if self.grok:
-            await self.grok.close()
+        if self.bridge:
+            await self.bridge.close()
 
         if self.media:
             await self.media.close()

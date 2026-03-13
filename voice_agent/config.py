@@ -32,6 +32,26 @@ GROK_REALTIME_URL = "wss://api.x.ai/v1/realtime"
 GROK_API_KEY = os.environ.get("XAI_API_KEY", "")
 GROK_VOICE = "Ara"
 
+# --- ElevenLabs ---
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
+ELEVENLABS_FIRST_MESSAGE = "Hey, this is Genie from Liora Dermatology."
+ELEVENLABS_SAMPLE_RATE = 16000
+
+# --- AI Backend Selection ---
+AI_BACKEND = os.environ.get("AI_BACKEND", "elevenlabs")  # "grok" or "elevenlabs"
+
+# --- ElevenLabs ---
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
+ELEVENLABS_FIRST_MESSAGE = "Hey, this is Genie from Liora Dermatology."
+ELEVENLABS_SAMPLE_RATE = 16000
+
+# --- AI Backend Selection ---
+AI_BACKEND = os.environ.get("AI_BACKEND", "elevenlabs")  # "grok" or "elevenlabs"
+
 # --- Weave Token (from .env or CLI) ---
 WEAVE_TOKEN = os.environ.get("WEAVE_TOKEN", "")
 
@@ -42,7 +62,14 @@ PCMU_FRAME_SIZE = (PCMU_SAMPLE_RATE * PCMU_FRAME_MS) // 1000  # 160 bytes
 PCMU_SILENCE = b"\xff"  # μ-law silence byte
 
 # --- Safety ---
-ALLOWED_DIAL_PHONES = {"+13302067819", "+19179401010"}  # Barric Reed, Libby
+ALLOWED_DIAL_PHONES = {"+13302067819", "+19179401010", "+19179415577"}
+
+# Map destination number → patient name for the system prompt
+PATIENT_NAMES = {
+    "3302067819": "Barric (pronounced bear-ick)",
+    "9179401010": "Libby",
+    "9179415577": "Jenny",
+}
 FROM_NUMBER = "2124334569"
 FROM_NAME = "Liora Dermatology & Aesthetics"
 
@@ -57,14 +84,14 @@ SYSTEM_INSTRUCTIONS = (
     "React to what they say — laugh if something's funny, sympathize if they're annoyed.\n\n"
 
     "YOUR TASK FOR THIS CALL:\n"
-    "You are calling a patient named Barric (pronounced bear-ick) to reschedule their upcoming appointment. "
+    "You are calling a patient named {patient_name} to reschedule their upcoming appointment. "
     "You need them to move to Monday at 3:00 PM.\n\n"
 
     "CALL FLOW (adapt naturally, don't read verbatim):\n"
     "1. Wait for them to say hello first — you called them, so let them pick up and greet you. "
     "Once they say hello or hi or anything, THEN introduce yourself: "
-    "'Hey, this is Genie from Liora Dermatology.'\n"
-    "2. Ask if you're speaking to Barric.\n"
+    "'Hey, this is Genie from Liora Dermatology and Aesthetics.'\n"
+    "2. Ask if you're speaking to {patient_name}.\n"
     "3. 'So we had a little scheduling mix-up and I was hoping we could move your appointment "
     "to Monday at 3. Would that work for you?'\n"
     "4. If they agree — confirm it, thank them.\n"
@@ -77,7 +104,7 @@ SYSTEM_INSTRUCTIONS = (
     "7. If they ask about the forms: it's an email from ModMed with a link to create their patient "
     "portal account. Once they're in, the forms are right there. If they can't find the email, "
     "offer to resend it — 'No worries, I can send that over again.'\n"
-    "8. End warmly: 'Alright, you're all set! Thanks Barric, have a good one.'\n\n"
+    "8. End warmly: 'Alright, you're all set! Thanks {patient_name}, have a good one.'\n\n"
 
     "STYLE:\n"
     "- Keep it SHORT. One or two sentences per turn. This is a phone call.\n"

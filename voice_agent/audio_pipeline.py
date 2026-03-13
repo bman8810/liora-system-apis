@@ -1,8 +1,8 @@
-"""Bidirectional audio bridge between RTP media and Grok realtime.
+"""Bidirectional audio bridge between RTP media and AI voice backend.
 
-Inbound: RTP frame → base64 → Grok input_audio_buffer.append (per-frame, immediate)
-Outbound: Grok response.output_audio.delta → slice into 160-byte frames → send immediately
-Interruption: on speech_started, flush outbound + cancel Grok response
+Inbound: RTP frame → AI backend (per-frame or chunked depending on backend)
+Outbound: AI audio → slice into 160-byte frames → send immediately
+Interruption: on speech_started, flush outbound + cancel AI response
 """
 
 import asyncio
@@ -10,31 +10,31 @@ import logging
 from typing import Optional
 
 from . import config
-from .grok_bridge import GrokBridge
+from .ai_bridge import AIBridge
 from .media_handler import WebRTCMediaHandler
 
 logger = logging.getLogger(__name__)
 
 
 class AudioPipeline:
-    """Bridges phone RTP audio and Grok realtime voice API."""
+    """Bridges phone RTP audio and an AI voice backend."""
 
-    def __init__(self, media: WebRTCMediaHandler, grok: GrokBridge):
+    def __init__(self, media: WebRTCMediaHandler, bridge: AIBridge):
         self.media = media
-        self.grok = grok
+        self.bridge = bridge
 
         # State
         self._running = False
-        self._grok_speaking = False
+        self._bridge_speaking = False
         self._interrupted = False
 
         # Wire up callbacks
         self.media.on_audio_received = self._on_rtp_audio
-        self.grok.on_audio = self._on_grok_audio
-        self.grok.on_speech_started = self._on_speech_started
-        self.grok.on_speech_stopped = self._on_speech_stopped
-        self.grok.on_response_done = self._on_response_done
-        self.grok.on_transcript = self._on_transcript
+        self.bridge.on_audio = self._on_bridge_audio
+        self.bridge.on_speech_started = self._on_speech_started
+        self.bridge.on_speech_stopped = self._on_speech_stopped
+        self.bridge.on_response_done = self._on_response_done
+        self.bridge.on_transcript = self._on_transcript
 
     async def start(self):
         """Start the audio pipeline."""
@@ -54,7 +54,7 @@ class AudioPipeline:
             await asyncio.sleep(5.0)
             if self._running and self._inbound_count > 0 and self._outbound_count == 0:
                 logger.info("No speech detected from callee after 5s — triggering greeting")
-                await self.grok.send_response_create()
+                await self.bridge.send_response_create()
         except asyncio.CancelledError:
             pass
 
@@ -62,7 +62,7 @@ class AudioPipeline:
     _outbound_count = 0
 
     async def _on_rtp_audio(self, mulaw_bytes: bytes):
-        """Inbound: RTP μ-law audio → Grok.
+        """Inbound: RTP μ-law audio → AI backend.
 
         Send immediately per-frame for lowest latency.
         """
@@ -71,17 +71,17 @@ class AudioPipeline:
 
         self._inbound_count += 1
         if self._inbound_count == 1:
-            logger.info(f"First inbound audio frame: {len(mulaw_bytes)} bytes → Grok")
+            logger.info(f"First inbound audio frame: {len(mulaw_bytes)} bytes → AI backend")
         elif self._inbound_count % 500 == 0:
-            logger.info(f"Inbound audio frames sent to Grok: {self._inbound_count}")
+            logger.info(f"Inbound audio frames sent to AI backend: {self._inbound_count}")
 
         try:
-            await self.grok.send_audio(mulaw_bytes)
+            await self.bridge.send_audio(mulaw_bytes)
         except Exception as e:
-            logger.error(f"Error sending audio to Grok: {e}")
+            logger.error(f"Error sending audio to AI backend: {e}")
 
-    async def _on_grok_audio(self, mulaw_bytes: bytes):
-        """Outbound: Grok audio → slice into frames → send immediately.
+    async def _on_bridge_audio(self, mulaw_bytes: bytes):
+        """Outbound: AI audio → slice into frames → send immediately.
 
         Instead of buffering and pumping on a timer, we slice the incoming
         chunk into 160-byte frames and queue them directly to the sender track.
@@ -90,7 +90,7 @@ class AudioPipeline:
         if not self._running or self._interrupted:
             return
 
-        self._grok_speaking = True
+        self._bridge_speaking = True
         frame_size = config.PCMU_FRAME_SIZE
 
         # Slice into frames and send each immediately
@@ -110,28 +110,26 @@ class AudioPipeline:
             logger.info(f"Outbound audio frames sent to phone: {self._outbound_count}")
 
     async def _on_speech_started(self):
-        """User started speaking — interrupt Grok immediately.
+        """User started speaking — interrupt AI immediately.
 
-        Always cancel + flush, even if _grok_speaking is False — there may
+        Always cancel + flush, even if _bridge_speaking is False — there may
         still be buffered audio playing on the phone from a response that
-        Grok already finished generating.
+        the AI already finished generating.
         """
-        logger.info("Interruption: user speaking, canceling Grok + flushing buffer")
+        logger.info("Interruption: user speaking, canceling AI response + flushing buffer")
         self._interrupted = True
-        self._grok_speaking = False
+        self._bridge_speaking = False
 
-        # Flush buffered outbound audio so the caller stops hearing Grok immediately
+        # Flush buffered outbound audio so the caller stops hearing AI immediately
         self.media.flush_outbound()
 
         try:
-            # Cancel generation + clear Grok's server-side output buffer
-            # so no more deltas arrive after the cancel
             await asyncio.gather(
-                self.grok.cancel_response(),
-                self.grok.truncate_audio(),
+                self.bridge.cancel_response(),
+                self.bridge.truncate_audio(),
             )
         except Exception as e:
-            logger.error(f"Error canceling Grok response: {e}")
+            logger.error(f"Error canceling AI response: {e}")
 
     async def _on_speech_stopped(self):
         """User stopped speaking — allow Grok output again."""
@@ -139,10 +137,10 @@ class AudioPipeline:
         self._interrupted = False
 
     async def _on_response_done(self, event: dict):
-        """Grok finished generating a response."""
-        self._grok_speaking = False
+        """AI finished generating a response."""
+        self._bridge_speaking = False
         self._interrupted = False
-        logger.info("Grok response done")
+        logger.info("AI response done")
 
     async def _on_transcript(self, text: str, role: str):
         """Log transcripts for debugging."""

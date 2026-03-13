@@ -1,3 +1,4 @@
 websockets>=15.0
 aiortc>=1.9.0
 requests>=2.31.0
+elevenlabs>=2.39.0

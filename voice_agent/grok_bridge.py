@@ -13,11 +13,12 @@ from typing import Callable, Optional
 import websockets
 
 from . import config
+from .ai_bridge import AIBridge
 
 logger = logging.getLogger(__name__)
 
 
-class GrokBridge:
+class GrokBridge(AIBridge):
     """Client for Grok's realtime voice API."""
 
     def __init__(
@@ -29,19 +30,19 @@ class GrokBridge:
         on_response_done: Optional[Callable] = None,
         on_transcript: Optional[Callable] = None,
     ):
+        super().__init__(
+            on_audio=on_audio,
+            on_speech_started=on_speech_started,
+            on_speech_stopped=on_speech_stopped,
+            on_response_done=on_response_done,
+            on_transcript=on_transcript,
+        )
         self.api_key = api_key or config.GROK_API_KEY
         if not self.api_key:
             raise ValueError("XAI_API_KEY environment variable not set")
 
-        self.on_audio = on_audio                    # async callback(mulaw_bytes)
-        self.on_speech_started = on_speech_started  # async callback()
-        self.on_speech_stopped = on_speech_stopped  # async callback()
-        self.on_response_done = on_response_done    # async callback(dict)
-        self.on_transcript = on_transcript          # async callback(str, role)
-
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self._running = False
-        self._session_ready: Optional[asyncio.Event] = None
 
     async def connect(self):
         """Connect to Grok realtime WebSocket."""
@@ -61,18 +62,19 @@ class GrokBridge:
         )
         logger.info("Grok WebSocket connected")
 
-    async def configure_session(self):
+    async def configure_session(self, patient_name: str = "the patient"):
         """Send session.update to configure voice, audio format, and system instructions."""
+        instructions = config.SYSTEM_INSTRUCTIONS.format(patient_name=patient_name)
         session_config = {
             "type": "session.update",
             "session": {
                 "voice": config.GROK_VOICE,
                 "temperature": 0.9,
-                "instructions": config.SYSTEM_INSTRUCTIONS,
+                "instructions": instructions,
                 "turn_detection": {
                     "type": "server_vad",
                     "threshold": 0.3,
-                    "silence_duration_ms": 400,
+                    "silence_duration_ms": 300,
                 },
                 "audio": {
                     "input": {"format": {"type": "audio/pcmu"}},
