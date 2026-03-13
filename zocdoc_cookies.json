@@ -1,0 +1,242 @@
+[
+  {
+    "name": "firstTimeVisitor",
+    "value": "ce73c5f4-db40-4046-9027-bb0860cef5e7",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1807970684.491514,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "ABG",
+    "value": "7dc5c534-25f0-480b-904b-ec5c22747b9e",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1807959584.841257,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "abfp",
+    "value": "1",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1807959584.841287,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "originalReferrer",
+    "value": "https://www.zocdoc.com/signin?provider=1",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1807959584.841313,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "sut",
+    "value": "64b27a4d-69aa-4912-b053-e076992b8d31",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1807970406.232273,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "provstaff",
+    "value": "",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1807959584.841405,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "CurrentPracticeId",
+    "value": "pt_FMyrNSVN50CbgjEI0NcL9h",
+    "domain": ".www.zocdoc.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "entityId",
+    "value": "practicestaff~ZXV58yYGUUyjc6Zps52FrQ",
+    "domain": "www.zocdoc.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "ASP.NET_SessionId",
+    "value": "gusddvnhlev4x0ljbh4smj0d",
+    "domain": "www.zocdoc.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "mostRecentReferrer",
+    "value": "NONE",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1807959896.592018,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "UpdateUserTypeTracking",
+    "value": "done",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "referrer_7e86895bb61d40b597ec9333f307d017",
+    "value": "www.zocdoc.com%2Fsignin",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1807970398.432489,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "product_channel",
+    "value": "brand",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1773411718.598408,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "product_channel_detail",
+    "value": "brand%20other%20direct",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1773411718.598448,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "product_channel_bsid",
+    "value": "7e86895bb61d40b597ec9333f307d017_2603131359",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1773411718.598487,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": ".ASPXAUTH",
+    "value": "C9F46AAEBFA0AFB1B03494F54FE7AFBAF303C7BFA1157CB19A5AB9911517DE201E23038B95037C8A26B1986CD7699EF160B1D789AF233326E2556FADC35593CC06BF09823F117FF02F10C1068DF3EE7CC5FF74CCD299ABADC87514CA8F1434AE414A599E562DE6AEE7B817278DA6A961",
+    "domain": "www.zocdoc.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "li",
+    "value": "t",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1773411884.469611,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "ZDAUTH",
+    "value": "C9F46AAEBFA0AFB1B03494F54FE7AFBAF303C7BFA1157CB19A5AB9911517DE201E23038B95037C8A26B1986CD7699EF160B1D789AF233326E2556FADC35593CC06BF09823F117FF02F10C1068DF3EE7CC5FF74CCD299ABADC87514CA8F1434AE414A599E562DE6AEE7B817278DA6A961",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "JWTv2",
+    "value": "eyJhbGciOiJSUzI1NiIsImtpZCI6IjYyRjMzNTc3MEZFMzU2NTdFQTI0QzA0MTM4MEQ5QUU2QzVCQzE5NUUiLCJ0eXAiOiJKV1QifQ.eyJqdGkiOiJIT2swdWpkR2NrU3BSS0MtQVJvZ2xRIiwic3ViIjoiYXVfVmRrWVNhVnBQVVNFVkRHQy03bExGQSIsInByYWN0aWNlIjoicHRfRk15ck5TVk41MENiZ2pFSTBOY0w5aCIsInByYWN0aWNlLnJiYWNfcm9sZXMiOjEsInByYWN0aWNlLnJiYWNfcHJhY3RpY2VfaWQiOiJwdF9GTXlyTlNWTjUwQ2JnakVJME5jTDloIiwibmJmIjoxNzczNDEwMzQ2LCJleHAiOjE3NzM0MTIyMDYsImlhdCI6MTc3MzQxMDM0NiwiaXNzIjoiWmQiLCJhdWQiOiJKV1R2MiJ9.RS9nevC_YF_CV550dbkTF683iRb2Pp_TOvg4kl-2JVadlSCxQaiDa4l29FV2TGChlu0eAluen_7VHOnuP5A2HtMqy0O46EiRaPXd7sjVTyWd79ysi4Y9JPSAF6BFCsXBLAD99de6CKTjsYQ9UXVXIXGZMyikT2rd8BU4m-9wPImdaLel6QwaCic__K415UyKRw7Wv6cLe3BQS9k-MjT7l6oGGOweVertiVMt-MK-ITcXS_j9BusI2WsRkqlVCzDVL9IyHD_MAHNrbx39gcmbZc3854yRl2ISOR0-FPGAE-e_QoFAmOWd4d8q4qlm-vefSGjrsDbQL7acTotf63kyqvIw0a83oqPvHI_bDAJlectZeDZMd_Cl_9kQbOzDxvIMRwvc0e8HTb0iCPCG478qENZx5umX70ZFPipesx5WI0G2ZWRGb-SMKH3ysTVFMRfLlrEUflf9Izq6VoIKaxwBjaEEUXF6KAKMmVkgFQEvUBblObHgOvwcTk1ZkXfr9Pdp1Zqz9HkkU07ZI4bRy2eUM6S8iuITNmLduKQA3MVxvyj1x3Fz8EjAD0mzO8N7quIV4kM0O-UuWW8K2vm9EFRZCcfgACdIMNwxUfA67RLi4Yd7ohMv-4WG0LUlMlLaiWj1oUoBzrZrQmdaDi6aM8KLyc448z8yo428_oAvZNeBPXk",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "xsrf",
+    "value": "HOk0ujdGckSpRKC-ARoglQ",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "bsid",
+    "value": "7e86895bb61d40b597ec9333f307d017_2603131404",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1807970684.491479,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "AWSALB",
+    "value": "XXKTk8a4h5FHzKXNFEkBtDdJjaTKqPQqZVOfhcHYHAqV6zPZmHCo3G3b36Ik8GZfMFREbWx9LBnwzS5EnvPPSL8B2hve+LN/Mb3+RJmbzkUpdN5kfmvahzXX4HyYDjCkpWeDqPYOzf6jYtgKKZFO5P/DO2lFMQsErkkycEYzUVErb10uv7q3Rn+319Y1Xw==",
+    "domain": "www.zocdoc.com",
+    "path": "/",
+    "expires": 1774015484.469549,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "AWSALBCORS",
+    "value": "XXKTk8a4h5FHzKXNFEkBtDdJjaTKqPQqZVOfhcHYHAqV6zPZmHCo3G3b36Ik8GZfMFREbWx9LBnwzS5EnvPPSL8B2hve+LN/Mb3+RJmbzkUpdN5kfmvahzXX4HyYDjCkpWeDqPYOzf6jYtgKKZFO5P/DO2lFMQsErkkycEYzUVErb10uv7q3Rn+319Y1Xw==",
+    "domain": "www.zocdoc.com",
+    "path": "/",
+    "expires": 1774015484.469593,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "datadome",
+    "value": "GUxvud22fo_oTnY2TNSCfUDrZoBnssuZ9TI8vFKyPVuc~lx~d73PLn2iEN4pKvAbZ8GrALw98wBgQW0Sslvur4RDJVOinZMacqU6oPAxxwtScFYFbmkTyTwhkZA9o6bF",
+    "domain": ".zocdoc.com",
+    "path": "/",
+    "expires": 1804946684,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  }
+]
