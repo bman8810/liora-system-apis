@@ -1,7 +1,20 @@
 """Platform configuration dataclasses with Liora Dermatology defaults."""
 
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Set
+
+# Consolidated credential storage
+CREDENTIALS_DIR = Path(
+    os.environ.get("LIORA_CREDENTIALS_DIR",
+                   os.path.expanduser("~/.openclaw/credentials/liora"))
+)
+CREDENTIAL_FILES = {
+    "weave": "weave_token.json",
+    "ema": "ema_cookies.json",
+    "zocdoc": "zocdoc_cookies.json",
+}
 
 
 @dataclass
