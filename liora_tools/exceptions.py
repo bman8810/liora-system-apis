@@ -28,3 +28,7 @@ class GraphQLError(LioraAPIError):
 
 class RateLimitError(LioraAPIError):
     """429 Too Many Requests."""
+
+
+class OptimisticLockError(LioraAPIError):
+    """objectLockVersion mismatch — appointment was modified concurrently."""

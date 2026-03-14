@@ -402,13 +402,107 @@ Methods allowed: `HEAD`, `POST`, `GET`, `OPTIONS`
 Request body: JSON object (exact required fields TBD — empty body returns 500).
 Likely requires: `patient.id`, `provider.id`, `facility.id`, `appointmentType.id`, `scheduledStartDate`, `scheduledDuration`.
 
-### Update Appointment
+### Update / Reschedule Appointment
 
+```
+POST /ema/ws/v2/appointment?id={id}&mapId=APPOINTMENT_DETAILS
+```
+
+Methods allowed: `HEAD`, `POST`, `GET`, `OPTIONS`, `PUT`
+
+**Reschedule flow** (captured from EMA scheduler UI):
+1. `GET /ema/ws/v2/appointment/{id}?mapId=CHECK_IN` — fetch current state (includes `objectLockVersion`)
+2. `GET /ema/ws/v2/appointment/scheduleCheckWithReservations?appointmentId={id}&apptTypeId={}&duration={}&facilityId={}&providerId={}&scheduledStartDate={}` — validate the new slot
+3. `POST /ema/ws/v2/appointment?id={id}&mapId=APPOINTMENT_DETAILS` — submit the updated appointment
+
+**Important:** Reschedule is a **POST** with `id` as a query parameter, NOT a PUT.
+
+**Request body** (full appointment object with modified fields):
+```json
+{
+  "id": 19750900,
+  "objectLockVersion": 1,
+  "status": "PENDING",
+  "scheduledStartDate": "2026-03-16T13:00:00.000Z",
+  "scheduledEndDate": "2026-03-16T13:10:00.000Z",
+  "scheduledDuration": 10,
+  "facilityTimeZone": "US/Eastern",
+  "rescheduleReason": "PATIENT_RESCHEDULE",
+  "overrideAllowed": true,
+  "editable": true,
+  "origin": "INTERNAL",
+  "paymentMethod": "MEDICAL",
+  "reportableReason": "MEDICAL_NON_EMERGENCY",
+  "newPatient": false,
+  "patientPcpAbsent": false,
+  "provider": { "id": 8327689, "..." : "full provider object from GET" },
+  "facility": { "id": 2040, "..." : "full facility object from GET" },
+  "patient": { "id": 17481164, "..." : "full patient object from GET" },
+  "appointmentType": { "id": 6188, "..." : "full type object from GET" },
+  "visitReason": { "reasonId": "VR00000013", "name": "Existing Patient", "id": 12700 },
+  "additionalProviders": [],
+  "reservations": [],
+  "insuranceAuthorizations": []
+}
+```
+
+**Key fields for reschedule:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | number | Appointment ID (also in query param) |
+| `objectLockVersion` | number | Optimistic lock — must match current value or server rejects |
+| `scheduledStartDate` | string | New start time (ISO 8601 UTC, e.g. `"2026-03-16T13:00:00.000Z"`) |
+| `scheduledEndDate` | string | New end time (ISO 8601 UTC) |
+| `scheduledDuration` | number | Duration in minutes |
+| `rescheduleReason` | string | `"PATIENT_RESCHEDULE"` or `"OFFICE_EDIT"` |
+| `overrideAllowed` | boolean | Must be `true` to allow rescheduling |
+| `provider` | object | Full provider object (from GET response) |
+| `facility` | object | Full facility object (from GET response) |
+| `patient` | object | Full patient object (from GET response) |
+| `appointmentType` | object | Full appointment type object (from GET response) |
+
+**Pattern:** Read the full appointment via GET, modify `scheduledStartDate`, `scheduledEndDate`, `scheduledDuration`, add `rescheduleReason`, set `overrideAllowed: true`, then POST the entire object back.
+
+**Reschedule Reason Enum:** `PATIENT_RESCHEDULE` | `OFFICE_EDIT`
+
+**Also available (legacy):**
 ```
 PUT /ema/ws/v2/appointment/{id}
 ```
 
-Methods allowed: `HEAD`, `POST`, `GET`, `OPTIONS`, `PUT`
+### Cancel Appointment
+
+```
+POST /ema/ws/v3/appointments/{id}/cancel
+```
+
+| Query Parameter | Type | Description |
+|-----------------|------|-------------|
+| `cancelReason` | string | Reason enum (e.g. `PATIENT_CANCELLED`, `OFFICE_RESCHEDULED`) |
+| `customCancelReasonId` | number | Internal ID of the cancel reason (from cancel-reason API) |
+| `cancelNotes` | string | Optional free-text notes |
+| `selector` | string | Fields to return in the response |
+
+**Request body:** Empty (all parameters are query params).
+
+**Cancel Reason API:**
+```
+GET /ema/ws/v3/appointment/cancel-reason?where=active=="true"&sorting.sortBy=name&sorting.sortOrder=asc
+```
+
+**Available cancel reasons (Liora Derm):**
+| reasonId | name | id |
+|----------|------|----|
+| CR00000001 | COVID-19 | 425 |
+| CR00000002 | No Referral/Authorization | 1448 |
+| CR00000003 | Office Rescheduled | 2471 |
+| CR00000004 | Office Scheduling Error | 3494 |
+| CR00000006 | Patient Arrived Late | 5540 |
+| CR00000007 | Patient Cancelled | 6563 |
+| CR00000008 | Patient Deceased | 7586 |
+| CR00000009 | Patient Forgot | 8609 |
+| CR00000010 | Patient Left | 9632 |
+| CR00000011 | Patient Schedule Change | 10655 |
 
 ### Appointment Status Enum
 
@@ -722,7 +816,7 @@ ModMed offers a FHIR R4 API but it requires separate OAuth registration:
 
 ### 4. Appointment Creation (Incomplete)
 - [ ] Reverse-engineer the `POST /ema/ws/v2/appointment` payload by capturing a real appointment creation in the browser (we confirmed the endpoint accepts POST but didn't capture the required fields)
-- [ ] Same for `PUT /ema/ws/v2/appointment/{id}` — capture an update to document the payload
+- [x] Captured `POST /ema/ws/v2/appointment?id={id}&mapId=APPOINTMENT_DETAILS` reschedule payload (not PUT — uses POST with id as query param)
 - [ ] Test appointment status transitions (e.g., SCHEDULED → CHECKED_IN → CHECKED_OUT)
 
 ### 5. Headless Operation
@@ -739,7 +833,7 @@ ModMed offers a FHIR R4 API but it requires separate OAuth registration:
 - [ ] Log all API calls and response times for observability
 - [ ] Set up alerts for auth failures, session expiry spikes, or unexpected 500s
 - [ ] Rate limiting — unknown what EMA's limits are; start conservative and monitor for 429s
-- [ ] Handle the `objectLockVersion` field on appointment updates (optimistic locking — read before write)
+- [x] Handle the `objectLockVersion` field on appointment updates (optimistic locking — read before write, raises `OptimisticLockError` on 409)
 
 ### 8. Security
 - [ ] Store `ema_cookies.json` encrypted at rest (contains session tokens)

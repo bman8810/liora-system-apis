@@ -204,6 +204,7 @@ All exceptions inherit from `LioraAPIError`:
 | `SafetyGuardError` | Phone number not in allowlist |
 | `GraphQLError` | GraphQL response contained errors (has `errors` list) |
 | `RateLimitError` | 429 Too Many Requests |
+| `OptimisticLockError` | 409 Conflict — `objectLockVersion` mismatch (appointment modified concurrently) |
 
 ```python
 from liora_tools.exceptions import AuthenticationError, SafetyGuardError
@@ -298,6 +299,9 @@ except AuthenticationError:
 | `get_appointment(appointment_id, selector)` | Get appointment by ID |
 | `create_appointment(payload)` | Create appointment (v2) |
 | `update_appointment(appointment_id, payload)` | Update appointment (v2) |
+| `reschedule(appointment_id, new_start, new_duration, provider_id, reason)` | Reschedule appointment to a new date/time (read-before-write with optimistic locking) |
+| `cancel_appointment(appointment_id, reason, notes)` | Cancel an appointment with a reason |
+| `list_cancel_reasons()` | List available cancellation reasons |
 | `find_slots(appt_type_id, duration, time_of_day, specific_date, ...)` | Find available appointment slots |
 
 #### Reference Data

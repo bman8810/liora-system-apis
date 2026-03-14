@@ -1,9 +1,16 @@
 """EmaClient — client for the ModMed EMA API (patients, appointments, scheduling)."""
 
+from __future__ import annotations
+
 import requests
 
 from liora_tools.config import EmaConfig
-from liora_tools.exceptions import AuthenticationError, LioraAPIError, RateLimitError
+from liora_tools.exceptions import (
+    AuthenticationError,
+    LioraAPIError,
+    OptimisticLockError,
+    RateLimitError,
+)
 
 
 class EmaClient:
@@ -67,6 +74,11 @@ class EmaClient:
             )
         if r.status_code == 429:
             raise RateLimitError("EMA rate limit exceeded", status_code=429, response=r)
+        if r.status_code == 409:
+            raise OptimisticLockError(
+                "objectLockVersion mismatch — appointment was modified concurrently",
+                status_code=409, response=r,
+            )
         if not r.ok:
             raise LioraAPIError(
                 f"EMA API error: {r.status_code} {r.text[:200]}",
@@ -167,6 +179,124 @@ class EmaClient:
     def update_appointment(self, appointment_id: str, payload: dict) -> dict:
         """Update an appointment (v2 endpoint)."""
         return self._put(f"/ema/ws/v2/appointment/{appointment_id}", payload).json()
+
+    def reschedule(
+        self,
+        appointment_id: str | int,
+        new_start: str,
+        new_duration: int = None,
+        provider_id: int = None,
+        reason: str = "PATIENT_RESCHEDULE",
+    ) -> dict:
+        """Reschedule an appointment to a new date/time.
+
+        Uses a read-before-write pattern: fetches the current appointment
+        (including objectLockVersion), updates the time fields, and POSTs
+        back to the v2 endpoint.
+
+        Args:
+            appointment_id: EMA appointment ID.
+            new_start: New start time in ISO 8601 UTC (e.g. "2026-03-16T13:00:00.000Z").
+            new_duration: Duration in minutes. None = keep existing.
+            provider_id: New provider ID. None = keep existing.
+            reason: Reschedule reason enum — "PATIENT_RESCHEDULE" or "OFFICE_EDIT".
+
+        Returns:
+            The updated appointment dict from the API.
+
+        Raises:
+            OptimisticLockError: If the appointment was modified concurrently.
+        """
+        from datetime import datetime, timedelta
+
+        # Step 1: Fetch current appointment state (v2 gives us the full object)
+        current = self._get(
+            f"/ema/ws/v2/appointment/{appointment_id}",
+            {"mapId": "CHECK_IN"},
+        ).json()
+
+        # Step 2: Compute new end time
+        duration = new_duration if new_duration is not None else current.get("scheduledDuration", 10)
+        start_dt = datetime.fromisoformat(new_start.replace("Z", "+00:00"))
+        end_dt = start_dt + timedelta(minutes=duration)
+        new_end = end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        # Step 3: Update time fields in the current object
+        current["scheduledStartDate"] = new_start
+        current["scheduledEndDate"] = new_end
+        current["scheduledDuration"] = duration
+        current["rescheduleReason"] = reason
+        current["overrideAllowed"] = True
+
+        if provider_id is not None:
+            current.setdefault("provider", {})["id"] = provider_id
+
+        # Step 4: POST to the reschedule endpoint
+        return self._post(
+            f"/ema/ws/v2/appointment?id={appointment_id}&mapId=APPOINTMENT_DETAILS",
+            current,
+        ).json()
+
+    def cancel_appointment(
+        self,
+        appointment_id: str | int,
+        reason: str = "PATIENT_CANCELLED",
+        notes: str = "",
+    ) -> dict:
+        """Cancel an appointment.
+
+        Args:
+            appointment_id: EMA appointment ID.
+            reason: Cancel reason enum (e.g. "PATIENT_CANCELLED", "OFFICE_RESCHEDULED",
+                    "OFFICE_SCHEDULING_ERROR", "PATIENT_SCHEDULE_CHANGE").
+            notes: Optional free-text cancellation notes.
+
+        Returns:
+            The cancelled appointment dict from the API.
+        """
+        # Step 1: Look up the cancel reason ID from the reason name/enum
+        reasons = self._get("/ema/ws/v3/appointment/cancel-reason", {
+            "where": 'active=="true"',
+            "sorting.sortBy": "name",
+            "sorting.sortOrder": "asc",
+            "paging.pageSize": "20",
+        }).json()
+
+        # Match by reasonId or name (case-insensitive)
+        reason_upper = reason.upper().replace(" ", "_")
+        cancel_reason = None
+        for r in reasons:
+            if r.get("reasonId", "").upper() == reason_upper:
+                cancel_reason = r
+                break
+            # Also match against the name with underscores (e.g. "PATIENT_CANCELLED" -> "Patient Cancelled")
+            name_normalized = r.get("name", "").upper().replace(" ", "_")
+            if name_normalized == reason_upper:
+                cancel_reason = r
+                break
+
+        if cancel_reason is None:
+            available = [r["name"] for r in reasons]
+            raise LioraAPIError(
+                f"Unknown cancel reason '{reason}'. Available: {available}"
+            )
+
+        # Step 2: POST to the cancel endpoint
+        return self._post(
+            f"/ema/ws/v3/appointments/{appointment_id}/cancel"
+            f"?cancelReason={cancel_reason['name'].upper().replace(' ', '_')}"
+            f"&customCancelReasonId={cancel_reason['id']}"
+            f"&cancelNotes={notes}",
+        ).json()
+
+    def list_cancel_reasons(self) -> list:
+        """List available appointment cancellation reasons."""
+        return self._get("/ema/ws/v3/appointment/cancel-reason", {
+            "where": 'active=="true"',
+            "sorting.sortBy": "name",
+            "sorting.sortOrder": "asc",
+            "paging.pageSize": "20",
+        }).json()
 
     def find_slots(self, appt_type_id: str, duration: int = 15,
                    time_of_day: str = "ANYTIME", specific_date: str = None,
