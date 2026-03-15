@@ -37,3 +37,9 @@ class ZocdocConfig:
     practice_id: str = "pt_FMyrNSVN50CbgjEI0NcL9h"
     provider_id: str = "pr_eTTyn6m-e0y7oL1yjr9JQB"
     cookie_file: str = "zocdoc_cookies.json"
+
+
+@dataclass
+class GenieBottleConfig:
+    base_url: str = "https://genies-bottle.vercel.app"
+    agent_id: str = "claude-code"

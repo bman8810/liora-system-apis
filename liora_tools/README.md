@@ -1,13 +1,13 @@
 # liora_tools
 
-Python client library for Liora Dermatology's healthcare platform APIs — **Weave**, **ModMed EMA**, and **Zocdoc**.
+Python client library for Liora Dermatology's healthcare platform APIs — **Weave**, **ModMed EMA**, **Zocdoc**, and **Genies Bottle**.
 
 Extracted from reverse-engineered discovery scripts into clean, importable client classes with safety guards, separated auth, and sensible defaults.
 
 ## Quick Start
 
 ```python
-from liora_tools import WeaveClient, EmaClient, ZocdocClient
+from liora_tools import WeaveClient, EmaClient, ZocdocClient, GenieBottleClient
 
 # Weave — from a JWT token
 client = WeaveClient.from_token(token)
@@ -22,13 +22,18 @@ patients = client.search_patients(last_name="Smith")
 from liora_tools.auth.zocdoc import load_cookies
 client = ZocdocClient.from_cookies(load_cookies())
 counts = client.get_status_counts()
+
+# Genies Bottle — from API key
+gb = GenieBottleClient.from_api_key()  # reads GENIE_BOTTLE_API_KEY env var
+tasks = gb.list_tasks()
+gb.log_activity("test", "Hello from Claude Code")
 ```
 
 ## Structure
 
 ```
 liora_tools/
-├── __init__.py              # Exports WeaveClient, EmaClient, ZocdocClient
+├── __init__.py              # Exports WeaveClient, EmaClient, ZocdocClient, GenieBottleClient
 ├── config.py                # Dataclass configs with Liora Derm defaults
 ├── exceptions.py            # LioraAPIError hierarchy
 ├── utils.py                 # Phone normalization, safety guards
@@ -40,9 +45,11 @@ liora_tools/
 │   └── client.py            # WeaveClient
 ├── modmed/
 │   └── client.py            # EmaClient
-└── zocdoc/
-    ├── client.py            # ZocdocClient
-    └── queries.py           # GraphQL query constants
+├── zocdoc/
+│   ├── client.py            # ZocdocClient
+│   └── queries.py           # GraphQL query constants
+└── genies_bottle/
+    └── client.py            # GenieBottleClient
 ```
 
 ## Dependencies
@@ -116,6 +123,18 @@ client = ZocdocClient.from_cookies(cookies)
 
 **Important:** REST endpoints on `www.zocdoc.com` are blocked by DataDome for Python requests. Use `send_call_request_browser()` from `liora_tools.auth.zocdoc` for those calls — it makes the request via Playwright's `page.evaluate()`.
 
+### Genies Bottle
+
+Genies Bottle uses a static API key sent as both `X-API-Key` and `Authorization: Bearer` headers.
+
+```python
+# From env var (GENIE_BOTTLE_API_KEY)
+gb = GenieBottleClient.from_api_key()
+
+# Or pass explicitly
+gb = GenieBottleClient.from_api_key("your-api-key")
+```
+
 ---
 
 ## Configuration
@@ -123,7 +142,7 @@ client = ZocdocClient.from_cookies(cookies)
 Each platform has a config dataclass with Liora Dermatology defaults. Override any field for different practices:
 
 ```python
-from liora_tools.config import WeaveConfig, EmaConfig, ZocdocConfig
+from liora_tools.config import WeaveConfig, EmaConfig, ZocdocConfig, GenieBottleConfig
 
 # Use defaults
 client = WeaveClient.from_token(token)
@@ -146,8 +165,8 @@ client = WeaveClient.from_token(token, config=config)
 | `sip_profile_id` | Liora's UUID | SIP profile ID |
 | `from_number` | `2124334569` | Outbound caller ID (10 digits) |
 | `from_name` | `Liora Dermatology & Aesthetics` | Outbound caller name |
-| `allowed_send_phones` | `{+13302067819, ...}` | SMS safety allowlist |
-| `allowed_dial_phones` | `{+13302067819, ...}` | Dial safety allowlist |
+| `allowed_send_phones` | *(deprecated, unused)* | Previously SMS safety allowlist |
+| `allowed_dial_phones` | *(deprecated, unused)* | Previously dial safety allowlist |
 
 ### EmaConfig
 
@@ -167,29 +186,12 @@ client = WeaveClient.from_token(token, config=config)
 | `provider_id` | `pr_eTTyn6m-e0y7oL1yjr9JQB` | Provider identifier |
 | `cookie_file` | `zocdoc_cookies.json` | Cookie persistence path |
 
----
+### GenieBottleConfig
 
-## Safety Guards
-
-Methods that send messages or place calls are **safety-guarded** — they will only target phone numbers in the configured allowlist. Attempting to reach an unlisted number raises `SafetyGuardError`.
-
-```python
-# This works (number is in allowed_send_phones)
-client.send_message("330-206-7819", "Hello!")
-
-# This raises SafetyGuardError
-client.send_message("555-000-0000", "Hello!")
-```
-
-To add numbers to the allowlist, pass a custom config:
-
-```python
-config = WeaveConfig(
-    allowed_send_phones={"+13302067819", "+15550001234"},
-    allowed_dial_phones={"+13302067819", "+15550001234"},
-)
-client = WeaveClient.from_token(token, config=config)
-```
+| Field | Default | Description |
+|-------|---------|-------------|
+| `base_url` | `https://genies-bottle.vercel.app` | Dashboard base URL |
+| `agent_id` | `claude-code` | Agent identifier for write operations |
 
 ---
 
@@ -229,7 +231,7 @@ except AuthenticationError:
 |--------|-------------|
 | `list_threads(page_size=25)` | List inbox threads |
 | `get_thread(thread_id, page_size=25)` | Get messages in a thread |
-| `send_message(person_phone, body, person_id=None)` | Send SMS (**safety-guarded**) |
+| `send_message(person_phone, body, person_id=None)` | Send SMS |
 | `save_draft(thread_id, body, person_phone)` | Save a draft message |
 | `get_draft(thread_id)` | Get draft for a thread |
 | `indicate_typing(thread_id, person_phone, is_typing=True)` | Send typing indicator |
@@ -267,7 +269,7 @@ except AuthenticationError:
 | `fetch_sip_credentials()` | Extract SIP creds (username, password, domain, proxy, extension) |
 | `list_sip_profiles()` | List SIP profiles for the tenant |
 | `get_tenants()` | Get tenant info |
-| `dial(destination)` | Place outbound call (**safety-guarded**) |
+| `dial(destination)` | Place outbound call |
 | `list_call_queues()` | List call queues |
 | `get_call_queue_metrics()` | Get call queue metrics |
 | `check_registration()` | Check SIP profile registration status |
@@ -366,6 +368,49 @@ Available query constants: `GET_INBOX_ROWS`, `GET_PHI_APPOINTMENT_DETAILS`, `GET
 
 ---
 
+### GenieBottleClient
+
+#### Write (Webhook Endpoints — X-API-Key)
+
+| Method | Description |
+|--------|-------------|
+| `report_process(task_slug, status, *, correlation_id, trigger_type, trigger_source, patient, appointment, policy, prior_auth, cosmetic_lead, financing, steps, outcome_summary, error_message, started_at, completed_at, duration_ms, metadata)` | Report a task execution |
+| `log_activity(action, description, *, source, payload, patient)` | Log miscellaneous activity |
+| `request_feedback(title, description, *, priority, process_execution_id, bot_context, patient)` | Escalate for human review |
+| `heartbeat(**data)` | Send agent heartbeat (accepts any JSON) |
+
+Include a `patient` dict with an `"mrn"` key to auto-link patient records on any write endpoint.
+
+#### Reference
+
+| Method | Description |
+|--------|-------------|
+| `get_integration_guide()` | Full API spec — endpoints, payload shapes, available tasks & skills |
+
+#### Skill Sync (X-API-Key)
+
+| Method | Description |
+|--------|-------------|
+| `get_skills_manifest(agent_id)` | Lightweight manifest for diffing (id, slug, version, updated_at) |
+| `get_skills_batch(since, agent_id)` | Full skill documents modified after timestamp |
+| `get_skills_deleted(since, agent_id)` | Skills unpublished since timestamp (for cleanup) |
+
+#### Read (Query Endpoints — Bearer JWT, not available with API key)
+
+| Method | Description |
+|--------|-------------|
+| `get_dashboard()` | Aggregated stats |
+| `list_executions(*, task_slug, status, limit, offset)` | List task executions |
+| `list_activities(*, agent_id, action, limit, offset)` | List logged activities |
+| `list_feedback(*, status, priority, limit, offset)` | List feedback requests |
+| `list_tasks()` | List all task definitions |
+| `search_patients(query)` | Search patients |
+| `get_patient_timeline(patient_id)` | Patient event timeline |
+
+All write methods automatically include `agent_id` from config (default: `"claude-code"`).
+
+---
+
 ## Environment Variables
 
 | Variable | Used by | Description |
@@ -375,3 +420,4 @@ Available query constants: `GET_INBOX_ROWS`, `GET_PHI_APPOINTMENT_DETAILS`, `GET
 | `EMA_PASS` | EMA | Keycloak password |
 | `ZOCDOC_EMAIL` | Zocdoc | Login email |
 | `ZOCDOC_PASSWORD` | Zocdoc | Login password |
+| `GENIE_BOTTLE_API_KEY` | Genies Bottle | API key for dashboard access |

@@ -113,21 +113,21 @@ class EmaClient:
         return self._get("/ema/ws/v3/patients", params).json()
 
     def search_patients(self, last_name: str = None, first_name: str = None,
-                        status: str = "ACTIVE", page_size: int = 25) -> list:
-        """Search patients by name and status."""
+                        status: str = None, page_size: int = 25) -> list:
+        """Search patients by name and optionally status."""
         clauses = []
         if last_name:
             clauses.append(f'lastName=="{last_name}"')
         if first_name:
             clauses.append(f'firstName=="{first_name}"')
         if status:
-            clauses.append(f'fn=patientStatus="\"{status}\""')
+            clauses.append(f'patientStatus=="{status}"')
 
         where = ";".join(clauses) if clauses else None
         return self.list_patients(
             where=where,
             page_size=page_size,
-            selector="lastName,firstName,mrn,id,dateOfBirth,email,cellPhone",
+            selector="lastName,firstName,mrn,id,dateOfBirth,email,cellPhone,patientStatus",
         )
 
     def get_patient(self, patient_id: str, selector: str = None) -> dict:

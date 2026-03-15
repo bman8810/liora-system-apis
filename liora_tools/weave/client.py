@@ -6,7 +6,7 @@ import requests
 
 from liora_tools.config import WeaveConfig
 from liora_tools.exceptions import AuthenticationError, LioraAPIError, RateLimitError
-from liora_tools.utils import normalize_phone_e164, check_safety_guard
+from liora_tools.utils import normalize_phone_e164
 
 
 class WeaveClient:
@@ -62,9 +62,8 @@ class WeaveClient:
         })
 
     def send_message(self, person_phone: str, body: str, person_id: str = None) -> dict:
-        """Send an SMS. Safety-guarded against allowed_send_phones."""
+        """Send an SMS."""
         phone = normalize_phone_e164(person_phone)
-        check_safety_guard(phone, self._cfg.allowed_send_phones, "send message to")
 
         payload = {
             "locationId": self._cfg.location_id,
@@ -203,9 +202,8 @@ class WeaveClient:
         })
 
     def dial(self, destination: str) -> dict:
-        """Initiate an outbound call. Safety-guarded against allowed_dial_phones."""
+        """Initiate an outbound call."""
         phone = normalize_phone_e164(destination)
-        check_safety_guard(phone, self._cfg.allowed_dial_phones, "dial")
 
         # Weave dial API expects 10-digit number without country code
         digits = phone[2:]  # strip +1

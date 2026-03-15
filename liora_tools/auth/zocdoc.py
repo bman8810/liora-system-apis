@@ -1,5 +1,7 @@
 """Zocdoc authentication — browser login, cookie management, DataDome bypass."""
 
+from __future__ import annotations
+
 import json
 import os
 import time

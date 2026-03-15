@@ -1,5 +1,7 @@
 """EMA (ModMed) authentication — browser login, Keycloak SSO refresh, cookie management."""
 
+from __future__ import annotations
+
 import json
 import os
 
