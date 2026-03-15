@@ -92,7 +92,7 @@ class EmaClient:
         try:
             self._get("/ema/ws/v3/facilities", {"paging.pageSize": "1"})
             return True
-        except AuthenticationError:
+        except Exception:
             return False
 
     # -- Patients --

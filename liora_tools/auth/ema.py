@@ -134,25 +134,35 @@ def refresh_via_sso_http(sso_cookies: list, config: EmaConfig = None) -> list | 
         if "practice/staff" in r1.url:
             return _extract_cookies(session)
 
-        # Step 2: Find the SSO redirect URL (href pointing to sso.ema.md)
-        # EMA renders a page with a "Continue as Practice Staff" button/link
-        sso_url = None
-        match = re.search(r'href=["\']([^"\']*sso\.ema\.md[^"\']*)["\']', r1.text)
-        if match:
-            sso_url = match.group(1).replace("&amp;", "&")
+        # Step 2: Parse the "Continue as Practice Staff" form.
+        # Login.action renders a POST form (not an href) with hidden fields:
+        #   __disable__, _sourcePage, __fp
+        # The submit button name is "redirectToNonPatientLoginPage".
+        hidden_fields = {}
+        for input_tag in re.finditer(r'<input[^>]+>', r1.text):
+            tag = input_tag.group(0)
+            if 'hidden' not in tag:
+                continue
+            name_m = re.search(r'name=["\']([^"\']+)["\']', tag)
+            value_m = re.search(r'value=["\']([^"\']*)["\']', tag)
+            if name_m and value_m:
+                hidden_fields[name_m.group(1)] = value_m.group(1)
 
-        # Fallback: look for a form action
-        if not sso_url:
-            match = re.search(r'action=["\']([^"\']*openid-connect[^"\']*)["\']', r1.text)
-            if match:
-                sso_url = match.group(1).replace("&amp;", "&")
-
-        if not sso_url:
+        if not hidden_fields:
             return None  # Page structure unexpected
 
-        # Step 3: Follow SSO redirect — Keycloak sees the session cookie and redirects
-        # back to EMA's callback URL, which sets the full session cookie set
-        r2 = session.get(sso_url, allow_redirects=True, timeout=30)
+        # Build form data: hidden fields + the submit button
+        form_data = {**hidden_fields, "redirectToNonPatientLoginPage": ""}
+
+        # Step 3: POST Login.action — EMA redirects to Keycloak, which sees
+        # KEYCLOAK_SESSION and silently re-auths, then redirects back to EMA,
+        # setting fresh session cookies via Set-Cookie headers.
+        r2 = session.post(
+            f"{config.base_url}/ema/Login.action",
+            data=form_data,
+            allow_redirects=True,
+            timeout=30,
+        )
 
         if "practice/staff" in r2.url:
             return _extract_cookies(session)
