@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 
 import requests
 
@@ -86,6 +87,93 @@ def refresh_via_keycloak(cookies: list) -> list | None:
         except Exception:
             browser.close()
             return None
+
+
+def refresh_via_sso_http(sso_cookies: list, config: EmaConfig = None) -> list | None:
+    """Get a new EMA session using Keycloak SSO cookies via plain HTTP — no Playwright.
+
+    Works from WSL2 or any environment without a browser. The flow:
+      1. GET /ema/Login.action  →  EMA redirects to Keycloak with a fresh code_challenge
+      2. Keycloak sees KEYCLOAK_SESSION cookie  →  silent re-auth  →  redirects back to EMA
+      3. EMA callback exchanges code for session  →  Set-Cookie headers (incl. httpOnly)
+      4. requests.Session captures all Set-Cookie headers and returns full cookie list
+
+    Args:
+        sso_cookies: List of cookie dicts from sso.ema.md (must include KEYCLOAK_SESSION).
+
+    Returns:
+        List of session cookies (all domains) or None if SSO session is expired.
+    """
+    config = config or EmaConfig()
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    })
+
+    # Inject SSO cookies onto sso.ema.md domain
+    for c in sso_cookies:
+        domain = c.get("domain", "")
+        if "sso.ema.md" in domain:
+            session.cookies.set(c["name"], c["value"], domain="sso.ema.md", path="/")
+
+    try:
+        # Step 1: GET EMA login page — EMA generates PKCE and redirects to Keycloak
+        r1 = session.get(
+            f"{config.base_url}/ema/Login.action",
+            allow_redirects=True, timeout=30,
+        )
+
+        # If already on dashboard (no login needed), extract cookies and return
+        if "practice/staff" in r1.url:
+            return _extract_cookies(session)
+
+        # Step 2: Find the SSO redirect URL (href pointing to sso.ema.md)
+        # EMA renders a page with a "Continue as Practice Staff" button/link
+        sso_url = None
+        match = re.search(r'href=["\']([^"\']*sso\.ema\.md[^"\']*)["\']', r1.text)
+        if match:
+            sso_url = match.group(1).replace("&amp;", "&")
+
+        # Fallback: look for a form action
+        if not sso_url:
+            match = re.search(r'action=["\']([^"\']*openid-connect[^"\']*)["\']', r1.text)
+            if match:
+                sso_url = match.group(1).replace("&amp;", "&")
+
+        if not sso_url:
+            return None  # Page structure unexpected
+
+        # Step 3: Follow SSO redirect — Keycloak sees the session cookie and redirects
+        # back to EMA's callback URL, which sets the full session cookie set
+        r2 = session.get(sso_url, allow_redirects=True, timeout=30)
+
+        if "practice/staff" in r2.url:
+            return _extract_cookies(session)
+
+        return None
+
+    except Exception:
+        return None
+
+
+def _extract_cookies(session: requests.Session) -> list:
+    """Extract all cookies from a requests.Session as a list of dicts."""
+    cookies = []
+    for c in session.cookies:
+        cookies.append({
+            "name": c.name,
+            "value": c.value,
+            "domain": c.domain or "lioraderm.ema.md",
+            "path": c.path or "/",
+        })
+    return cookies or None
 
 
 def load_cookies(path: str = None) -> list | None:

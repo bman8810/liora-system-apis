@@ -1,6 +1,6 @@
 """Credential consolidation and session management for liora_tools platforms.
 
-Credentials are stored in ~/.openclaw/credentials/liora/ (configurable via
+Credentials are stored in ~/.liora/credentials/ (configurable via
 LIORA_CREDENTIALS_DIR env var). Each platform has its own JSON file:
 
   weave_token.json  — JWT token + refreshed_at timestamp
@@ -58,7 +58,8 @@ def get_weave_client():
     creds = load_credentials("weave")
     if not creds or "token" not in creds:
         raise AuthenticationError(
-            "No Weave token found. Run: python -m liora_tools auth refresh weave"
+            "No Weave token found. Run: python -m liora_tools auth refresh weave\n"
+            "Or from Windows Chrome: python -m liora_tools auth save-chrome weave"
         )
 
     session = get_session(creds["token"], config)
@@ -69,7 +70,8 @@ def get_weave_client():
         client.list_threads(page_size=1)
     except AuthenticationError:
         raise AuthenticationError(
-            "Weave token expired. Run: python -m liora_tools auth refresh weave"
+            "Weave token expired. Run: python -m liora_tools auth refresh weave\n"
+            "Or from Windows Chrome: python -m liora_tools auth save-chrome weave"
         )
     return client
 
@@ -93,7 +95,21 @@ def get_ema_client():
         if client.check_session():
             return client
 
-        # Try Keycloak SSO refresh (headless-ish, ~3s)
+        # Tier 2a: HTTP-based SSO refresh — works on WSL2, no Playwright needed
+        try:
+            new_cookies = ema_auth.refresh_via_sso_http(cookies)
+            if new_cookies:
+                save_credentials("ema", {
+                    "cookies": new_cookies,
+                    "last_verified": datetime.now(timezone.utc).isoformat(),
+                })
+                client = EmaClient.from_cookies(new_cookies, config)
+                if client.check_session():
+                    return client
+        except Exception:
+            pass
+
+        # Tier 2b: Keycloak browser refresh (requires Playwright)
         try:
             new_cookies = ema_auth.refresh_via_keycloak(cookies)
             if new_cookies:
@@ -108,30 +124,51 @@ def get_ema_client():
             pass
 
     raise AuthenticationError(
-        "EMA session expired. Run: python -m liora_tools auth refresh ema"
+        "EMA session expired. Run: python -m liora_tools auth refresh ema\n"
+        "Or from Windows Chrome: python -m liora_tools auth save-chrome ema"
     )
 
 
 def get_zocdoc_client():
-    """Get a validated ZocdocClient using browser transport.
+    """Get a validated ZocdocClient.
 
-    Uses the persistent browser profile at ~/.zocdoc-discovery-profile
-    to bypass DataDome. No cookie files needed — the profile has the session.
+    Strategy:
+      1. Try cookie-based transport (works on WSL2 without Playwright)
+      2. Fall back to browser transport (requires Playwright + Chrome)
     """
     from liora_tools.config import ZocdocConfig
     from liora_tools.zocdoc.client import ZocdocClient
 
     config = ZocdocConfig()
-    client = ZocdocClient.from_profile(config)
 
-    # Validate with a lightweight call
+    # Try cookie-based transport first (works without Playwright / on WSL2)
+    creds = load_credentials("zocdoc")
+    if creds:
+        cookies = creds.get("cookies") if isinstance(creds, dict) else creds
+        if cookies:
+            try:
+                from liora_tools.zocdoc.requests_transport import RequestsTransport
+                transport = RequestsTransport(cookies, config)
+                client = ZocdocClient(transport, config)
+                client.get_status_counts()
+                return client
+            except Exception:
+                pass  # cookies expired or DataDome blocked — try browser
+
+    # Fall back to browser transport (requires Playwright)
     try:
+        client = ZocdocClient.from_profile(config)
         client.get_status_counts()
         return client
-    except Exception:
-        client.close()
+    except ImportError:
         raise AuthenticationError(
-            "ZocDoc session expired. Run: python -m liora_tools auth refresh zocdoc"
+            "ZocDoc session expired and Playwright not available. "
+            "Run on Windows: python -m liora_tools auth save-chrome zocdoc"
+        )
+    except Exception:
+        raise AuthenticationError(
+            "ZocDoc session expired. Run: python -m liora_tools auth refresh zocdoc\n"
+            "Or from Windows Chrome: python -m liora_tools auth save-chrome zocdoc"
         )
 
 

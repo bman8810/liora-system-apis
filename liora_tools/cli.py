@@ -19,6 +19,7 @@ import sys
 import requests
 
 from liora_tools.auth.session_manager import check_all, get_client, refresh_platform
+from liora_tools.auth.chrome_extract import save_from_chrome
 from liora_tools.exceptions import LioraAPIError
 
 PORTAL_URL = os.environ.get("PORTAL_URL", "")
@@ -255,6 +256,13 @@ def auth_refresh(args):
     _output(refresh_platform(args.target))
 
 
+def auth_save_chrome(args):
+    data = sys.stdin.read().strip()
+    if not data:
+        _error("No data on stdin. Pipe JSON token/cookies.")
+    _output(save_from_chrome(args.target, data))
+
+
 # ── CLI Builder ─────────────────────────────────────────────────────────────
 
 
@@ -410,6 +418,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("target", choices=["weave", "ema", "zocdoc"],
                    help="Platform to refresh")
     p.set_defaults(func=auth_refresh)
+
+    p = a.add_parser("save-chrome",
+                     help="Save auth data extracted from Chrome (reads JSON from stdin)")
+    p.add_argument("target", choices=["weave", "ema", "zocdoc"],
+                   help="Platform to save credentials for")
+    p.set_defaults(func=auth_save_chrome)
 
     return parser
 

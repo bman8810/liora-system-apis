@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Set
 
 # Consolidated credential storage
+# Windows: C:\Users\barri\.liora\credentials
+# WSL2:   set LIORA_CREDENTIALS_DIR=/mnt/c/Users/barri/.liora/credentials
 CREDENTIALS_DIR = Path(
     os.environ.get("LIORA_CREDENTIALS_DIR",
-                   os.path.expanduser("~/.openclaw/credentials/liora"))
+                   os.path.expanduser("~/.liora/credentials"))
 )
 CREDENTIAL_FILES = {
     "weave": "weave_token.json",
