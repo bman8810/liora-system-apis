@@ -113,39 +113,23 @@ def get_ema_client():
 
 
 def get_zocdoc_client():
-    """Get a validated ZocdocClient with session refresh."""
-    from liora_tools.auth.zocdoc import get_session
+    """Get a validated ZocdocClient using browser transport.
+
+    Uses the persistent browser profile at ~/.zocdoc-discovery-profile
+    to bypass DataDome. No cookie files needed — the profile has the session.
+    """
     from liora_tools.config import ZocdocConfig
     from liora_tools.zocdoc.client import ZocdocClient
 
     config = ZocdocConfig()
-    creds = load_credentials("zocdoc")
-
-    cookies = None
-    if creds:
-        cookies = creds.get("cookies") if isinstance(creds, dict) else creds
-
-    if not cookies:
-        raise AuthenticationError(
-            "No ZocDoc cookies found. Run: python -m liora_tools auth refresh zocdoc"
-        )
-
-    session = get_session(cookies, config)
-    client = ZocdocClient(session, config)
+    client = ZocdocClient.from_profile(config)
 
     # Validate with a lightweight call
     try:
         client.get_status_counts()
         return client
-    except AuthenticationError:
-        pass
-
-    # Try inline session refresh
-    try:
-        client.refresh_session()
-        client.get_status_counts()
-        return client
     except Exception:
+        client.close()
         raise AuthenticationError(
             "ZocDoc session expired. Run: python -m liora_tools auth refresh zocdoc"
         )
