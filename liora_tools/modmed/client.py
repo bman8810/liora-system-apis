@@ -36,6 +36,14 @@ class EmaClient:
             )
         return cls(session, config)
 
+    @classmethod
+    def connect(cls, config: EmaConfig = None):
+        """Create an EmaClient with automatic auth (saved cookies -> SSO refresh -> browser login)."""
+        from liora_tools.auth.ema import ensure_session
+        config = config or EmaConfig()
+        session, _cookies = ensure_session(config=config)
+        return cls(session, config)
+
     # -- Internal helpers --
 
     def _get(self, path: str, params: dict = None) -> requests.Response:
@@ -137,12 +145,14 @@ class EmaClient:
         return self._get(f"/ema/ws/v3/patients/{patient_id}", params).json()
 
     def send_portal_email(self, patient_id: str, username: str,
-                          email: str, cell_phone: str) -> None:
-        """Activate or resend patient portal access email."""
+                          email: str) -> None:
+        """Activate or resend patient portal access email.
+
+        NOTE: Do NOT include cellPhone — the EMA API returns 500 when it's present.
+        """
         self._post(f"/ema/ws/v3/patients/{patient_id}/portal", {
             "username": username,
             "email": email,
-            "cellPhone": cell_phone,
         })
 
     # -- Appointments --

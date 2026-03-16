@@ -1,8 +1,49 @@
-"""Weave authentication — browser login and session building."""
+"""Weave authentication — browser login, token management, and session building."""
+
+from __future__ import annotations
+
+import os
 
 import requests
 
 from liora_tools.config import WeaveConfig
+
+_TOKEN_ENV_VAR = "WEAVE_TOKEN"
+
+
+def load_token() -> str | None:
+    """Load Weave token from env var."""
+    return os.environ.get(_TOKEN_ENV_VAR) or None
+
+
+def ensure_session(config: WeaveConfig = None) -> tuple:
+    """Try env token, then fall back to browser login.
+
+    Returns (requests.Session, token).
+    """
+    config = config or WeaveConfig()
+
+    token = load_token()
+    if token:
+        session = get_session(token, config)
+        if _test_session(session, config):
+            return session, token
+
+    token = login_browser()
+    session = get_session(token, config)
+    return session, token
+
+
+def _test_session(session: requests.Session, config: WeaveConfig) -> bool:
+    """Quick liveness check against the threads endpoint."""
+    try:
+        r = session.get(
+            f"{config.api_base}/sms/data/v4/threads",
+            params={"locationIds": config.location_id, "pageSize": "1"},
+        )
+        return r.status_code == 200
+    except Exception:
+        return False
 
 
 def login_browser() -> str:

@@ -46,6 +46,14 @@ class ZocdocClient:
         session = get_session(cookies, config)
         return cls(session, config)
 
+    @classmethod
+    def connect(cls, config: ZocdocConfig = None):
+        """Create a ZocdocClient with automatic auth (saved cookies -> browser login)."""
+        from liora_tools.auth.zocdoc import ensure_session
+        config = config or ZocdocConfig()
+        session, _cookies = ensure_session(config=config)
+        return cls(session, config)
+
     # -- Internal helpers --
 
     def _now_offset(self) -> str:

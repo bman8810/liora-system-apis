@@ -38,6 +38,11 @@ class GenieBottleClient:
         })
         return cls(session, config)
 
+    @classmethod
+    def connect(cls, config: GenieBottleConfig = None):
+        """Create a GenieBottleClient with automatic auth (env API key)."""
+        return cls.from_api_key(config=config)
+
     # -- Internal helpers --
 
     def _get(self, path: str, params: dict = None) -> dict:
@@ -161,6 +166,41 @@ class GenieBottleClient:
             body["patient"] = patient
         return self._post("/api/webhooks/feedback", body)
 
+    def query_executions(self, *, task_slug: str = None, status: str = None,
+                         patient_mrn: str = None, patient_name: str = None,
+                         correlation_id: str = None, limit: int = None) -> list:
+        """Query prior executions (API-key auth, no JWT needed).
+
+        Use this to check if a patient/task was already processed before
+        creating a new execution.
+
+        Args:
+            task_slug: Filter by task slug (e.g. 'zocdoc-new-booking').
+            status: Filter by status ('running', 'completed', 'failed', 'needs_review').
+            patient_mrn: Filter by patient MRN.
+            patient_name: Search by patient name (case-insensitive).
+            correlation_id: Look up by correlation ID.
+            limit: Max results (max 200, default 50).
+
+        Returns:
+            List of execution dicts with id, correlation_id, status,
+            outcome_summary, error_message, created_at, patient, task_slug, task_name.
+        """
+        params = {}
+        if task_slug is not None:
+            params["task_slug"] = task_slug
+        if status is not None:
+            params["status"] = status
+        if patient_mrn is not None:
+            params["patient_mrn"] = patient_mrn
+        if patient_name is not None:
+            params["patient_name"] = patient_name
+        if correlation_id is not None:
+            params["correlation_id"] = correlation_id
+        if limit is not None:
+            params["limit"] = limit
+        return self._get("/api/webhooks/executions", params or None)
+
     def heartbeat(self, **data) -> dict:
         """Send an agent heartbeat. Accepts any JSON structure."""
         body = {"agent_id": self._cfg.agent_id}
@@ -181,7 +221,11 @@ class GenieBottleClient:
 
     def list_executions(self, *, task_slug: str = None, status: str = None,
                         limit: int = None, offset: int = None) -> dict:
-        """List task executions."""
+        """List task executions (requires JWT auth, not API key).
+
+        For bot-facing queries, use query_executions() instead — it uses
+        the /api/webhooks/executions endpoint which accepts X-API-Key auth.
+        """
         params = {}
         if task_slug is not None:
             params["task_slug"] = task_slug

@@ -240,6 +240,66 @@ POST /sms/notifier/v1/indicate-typing
 }
 ```
 
+### Search Messages
+
+```
+GET /sms/search/v2?locationId={locationId}&groupIds={locationId}&query={text}&pageSize={n}
+```
+
+Full-text search across message bodies and contact names. Backed by a proper
+search index — **bypasses the ~100-thread Firestore limitation** of
+`list_threads` / `get_thread`.
+
+**Query Parameters:**
+| Param | Required | Description |
+|-------|----------|-------------|
+| `locationId` | Yes | Location UUID |
+| `groupIds` | Yes | Same as locationId (for single-location practices) |
+| `query` | Yes | Search text (searches message body + contact names) |
+| `pageSize` | No | Max results (default 25) |
+
+**Response:**
+```json
+{
+  "threads": [
+    {
+      "threadId": "thread-uuid",
+      "locationId": "location-uuid",
+      "personId": "person-uuid",
+      "personPhone": "+1XXXXXXXXXX",
+      "person": {
+        "firstName": "Jane",
+        "lastName": "Doe",
+        "status": "ACTIVE",
+        "contactInfo": [ ... ]
+      },
+      "messages": [
+        {
+          "smsId": "msg-uuid",
+          "timestamp": "2026-03-06T16:13:33Z",
+          "fragment": "matching message snippet text..."
+        }
+      ],
+      "resultType": "RESULT_TYPE_THREAD"
+    }
+  ],
+  "numResults": 23,
+  "nextPageToken": ""
+}
+```
+
+**Result Types:**
+| `resultType` | Meaning |
+|--------------|---------|
+| `RESULT_TYPE_THREAD` | Query matched message body text |
+| `RESULT_TYPE_PERSON` | Query matched contact name (returns latest message as snippet) |
+
+**Notes:**
+- Each thread returns only 1 message snippet (the best match or most recent)
+- To search for a specific topic across all patients, search for the topic (e.g., `"blue cross"`)
+- To find a patient's thread, search by their name (e.g., `"James Kepner"`)
+- Returns full person details including contactInfo, address, etc.
+
 ### Other SMS Endpoints
 
 | Method | Path | Description |

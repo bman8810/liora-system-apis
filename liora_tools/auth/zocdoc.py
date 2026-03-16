@@ -71,6 +71,7 @@ def login_browser() -> list:
 
 
 def load_cookies(path: str = None) -> list | None:
+    """Load cookies from a JSON file."""
     path = path or ZocdocConfig().cookie_file
     if not os.path.exists(path):
         return None
@@ -82,6 +83,53 @@ def save_cookies(cookies: list, path: str = None) -> None:
     path = path or ZocdocConfig().cookie_file
     with open(path, "w") as f:
         json.dump(cookies, f, indent=2)
+
+
+def ensure_session(cookies: list = None, config: ZocdocConfig = None) -> tuple:
+    """Two-tier session strategy: reuse cookies -> fresh browser login.
+
+    Returns (requests.Session, cookies).
+    """
+    config = config or ZocdocConfig()
+
+    if cookies is None:
+        cookies = load_cookies(config.cookie_file)
+
+    if cookies:
+        session = get_session(cookies, config)
+        if _test_session(session, config):
+            return session, cookies
+
+    fresh = login_browser()
+    save_cookies(fresh, config.cookie_file)
+    session = get_session(fresh, config)
+    return session, fresh
+
+
+def _test_session(session: requests.Session, config: ZocdocConfig) -> bool:
+    """Quick liveness check — hit the status aggregates GQL endpoint."""
+    try:
+        r = session.post(config.gql_url, json={
+            "operationName": "getAppointmentStatusAggregates",
+            "variables": {
+                "practiceId": config.practice_id,
+                "fromAppointmentTime": "2020-01-01T00:00:00-04:00",
+                "appointmentStatuses": ["UNCONFIRMED"],
+                "productType": "INBOX",
+                "appointmentSources": ["MARKETPLACE"],
+            },
+            "query": (
+                "query getAppointmentStatusAggregates($practiceId: String!, "
+                "$fromAppointmentTime: OffsetDateTime, $appointmentStatuses: [AppointmentStatus!]!, "
+                "$productType: ProductType!, $appointmentSources: [AppointmentSource!]!) { "
+                "appointmentStatusAggregates(practiceId: $practiceId, fromAppointmentTime: $fromAppointmentTime, "
+                "appointmentStatuses: $appointmentStatuses, productType: $productType, "
+                "appointmentSources: $appointmentSources) { status count } }"
+            ),
+        })
+        return r.ok and "errors" not in r.json()
+    except Exception:
+        return False
 
 
 def get_session(cookies: list, config: ZocdocConfig = None) -> requests.Session:

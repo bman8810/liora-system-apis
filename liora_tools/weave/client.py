@@ -27,6 +27,14 @@ class WeaveClient:
         session = get_session(token, config)
         return cls(session, config)
 
+    @classmethod
+    def connect(cls, config: WeaveConfig = None):
+        """Create a WeaveClient with automatic auth (env token -> browser login)."""
+        from liora_tools.auth.weave import ensure_session
+        config = config or WeaveConfig()
+        session, _token = ensure_session(config)
+        return cls(session, config)
+
     # -- Internal helpers --
 
     def _get(self, path: str, params: dict = None) -> dict:
@@ -58,6 +66,27 @@ class WeaveClient:
     def get_thread(self, thread_id: str, page_size: int = 25) -> dict:
         return self._get(f"/sms/data/v4/unified/threads/{thread_id}", {
             "locationId": self._cfg.location_id,
+            "pageSize": str(page_size),
+        })
+
+    def search_messages(self, query: str, page_size: int = 25) -> dict:
+        """Search messages and contacts by text query.
+
+        Uses the /sms/search/v2 endpoint (backed by a search index, NOT
+        Firestore) so it bypasses the ~100-thread limitation of list_threads.
+
+        Searches both message body text and contact names. Returns threads
+        with matching message snippets, person details, and threadIds.
+
+        Returns dict with keys: threads, numResults, nextPageToken.
+        Each thread has: threadId, personPhone, person, messages (snippets),
+        resultType (RESULT_TYPE_THREAD for body match, RESULT_TYPE_PERSON
+        for name match).
+        """
+        return self._get("/sms/search/v2", {
+            "locationId": self._cfg.location_id,
+            "groupIds": self._cfg.location_id,
+            "query": query,
             "pageSize": str(page_size),
         })
 
