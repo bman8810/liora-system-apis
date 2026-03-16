@@ -27,7 +27,7 @@ def login_browser() -> list:
 
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
-            profile, channel="chrome", headless=False,
+            profile, headless=False,
             viewport={"width": 1440, "height": 900},
             args=["--disable-blink-features=AutomationControlled"],
             ignore_default_args=["--enable-automation"],
@@ -183,7 +183,7 @@ def send_call_request_browser(request_id: str, reasons: list = None,
 
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
-            profile, channel="chrome", headless=False,
+            profile, headless=False,
             viewport={"width": 1440, "height": 900},
             args=["--disable-blink-features=AutomationControlled"],
             ignore_default_args=["--enable-automation"],

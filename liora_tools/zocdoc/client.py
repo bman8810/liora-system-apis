@@ -1,14 +1,18 @@
-"""ZocdocClient — client for the Zocdoc Provider API (inbox, bookings, messaging)."""
+"""ZocdocClient — client for the Zocdoc Provider API (inbox, bookings, messaging).
+
+All API calls are executed via a Playwright browser context to bypass
+DataDome bot detection. The browser reuses the persistent profile at
+~/.zocdoc-discovery-profile (same profile used by auth refresh).
+"""
 
 import json
 from datetime import datetime, timezone, timedelta
-
-import requests
 
 from liora_tools.config import ZocdocConfig
 from liora_tools.exceptions import (
     AuthenticationError, GraphQLError, LioraAPIError, RateLimitError,
 )
+from liora_tools.zocdoc.browser_transport import BrowserTransport
 from liora_tools.zocdoc.queries import (
     GET_INBOX_ROWS, GET_PHI_APPOINTMENT_DETAILS,
     GET_STATUS_AGGREGATES, MARK_INBOX_APPOINTMENT_STATUS,
@@ -29,22 +33,31 @@ APPOINTMENT_SOURCES = ["MARKETPLACE", "API", "MANUAL_INTAKE"]
 class ZocdocClient:
     """Client for the Zocdoc Provider API.
 
-    Auth: Cookie-based + x-datadome-clientid header.
-    GQL at api2.zocdoc.com works from Python; REST at www.zocdoc.com is
-    blocked by DataDome — use browser-based methods for those calls.
+    Auth: Persistent Playwright browser profile with session cookies.
+    All requests go through browser fetch() to bypass DataDome.
     """
 
-    def __init__(self, session: requests.Session, config: ZocdocConfig = None):
-        self._s = session
+    def __init__(self, transport: BrowserTransport = None,
+                 config: ZocdocConfig = None):
         self._cfg = config or ZocdocConfig()
+        self._transport = transport or BrowserTransport()
 
     @classmethod
-    def from_cookies(cls, cookies: list, config: ZocdocConfig = None):
-        """Create a ZocdocClient from a list of cookie dicts."""
-        from liora_tools.auth.zocdoc import get_session
+    def from_profile(cls, config: ZocdocConfig = None):
+        """Create a ZocdocClient using the persistent browser profile."""
         config = config or ZocdocConfig()
-        session = get_session(cookies, config)
-        return cls(session, config)
+        transport = BrowserTransport()
+        return cls(transport, config)
+
+    def close(self):
+        """Close the browser transport."""
+        self._transport.stop()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     @classmethod
     def connect(cls, config: ZocdocConfig = None):
@@ -65,22 +78,24 @@ class ZocdocClient:
     # -- GraphQL --
 
     def gql(self, operation: str, variables: dict, query: str) -> dict:
-        """Execute a GraphQL operation."""
-        r = self._s.post(self._cfg.gql_url, json={
+        """Execute a GraphQL operation via browser transport."""
+        payload = {
             "operationName": operation,
             "variables": variables,
             "query": query,
-        })
-        if r.status_code == 401:
-            raise AuthenticationError("Zocdoc session expired", status_code=401, response=r)
-        if r.status_code == 429:
-            raise RateLimitError("Zocdoc rate limit exceeded", status_code=429, response=r)
-        if not r.ok:
-            raise LioraAPIError(
-                f"Zocdoc API error: {r.status_code} {r.text[:200]}",
-                status_code=r.status_code, response=r,
-            )
-        data = r.json()
+        }
+        try:
+            data = self._transport.gql(self._cfg.gql_url, payload)
+        except RuntimeError as e:
+            msg = str(e)
+            if "401" in msg:
+                raise AuthenticationError(
+                    "Zocdoc session expired", status_code=401)
+            if "403" in msg:
+                raise LioraAPIError(
+                    f"Zocdoc API error: {msg}", status_code=403)
+            raise LioraAPIError(f"Zocdoc API error: {msg}")
+
         if "errors" in data:
             raise GraphQLError(
                 f"GraphQL errors: {json.dumps(data['errors'])}",
@@ -143,34 +158,30 @@ class ZocdocClient:
         return self.gql("markInboxAppointmentStatus", variables, MARK_INBOX_APPOINTMENT_STATUS)
 
     def send_call_request(self, request_id: str, reasons: list = None) -> dict:
-        """Send 'call the office' request via REST.
-
-        NOTE: This endpoint is blocked by DataDome for Python requests.
-        Use liora_tools.auth.zocdoc.send_call_request_browser() instead.
-        """
+        """Send 'call the office' request via REST (through browser)."""
         reasons = reasons or ["Other"]
-        r = self._s.post(
-            f"{self._cfg.rest_base}/provider/api/appointments/RequestPatientCall",
-            json={
-                "apptId": str(request_id),
-                "requestedInformation": reasons,
-            },
-        )
-        if not r.ok:
+        url = f"{self._cfg.rest_base}/provider/api/appointments/RequestPatientCall"
+        payload = {
+            "apptId": str(request_id),
+            "requestedInformation": reasons,
+        }
+        result = self._transport.post(url, payload)
+        if result["status"] != 200:
             raise LioraAPIError(
-                f"RequestPatientCall failed: {r.status_code} {r.text[:200]}",
-                status_code=r.status_code, response=r,
+                f"RequestPatientCall failed: {result['status']} {result['body'][:200]}",
+                status_code=result["status"],
             )
-        return {"status": r.status_code, "body": r.text}
+        return result
 
     # -- Session --
 
     def refresh_session(self) -> dict:
-        """Refresh auth session."""
-        r = self._s.post(f"{self._cfg.rest_base}/auth/user/v1/refresh")
-        if not r.ok:
+        """Refresh auth session via browser."""
+        url = f"{self._cfg.rest_base}/auth/user/v1/refresh"
+        result = self._transport.post(url, {})
+        if result["status"] not in (200, 204):
             raise AuthenticationError(
-                f"Session refresh failed: {r.status_code}",
-                status_code=r.status_code, response=r,
+                f"Session refresh failed: {result['status']}",
+                status_code=result["status"],
             )
-        return r.json() if r.text else {"status": r.status_code}
+        return json.loads(result["body"]) if result["body"] else {"status": result["status"]}

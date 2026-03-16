@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import requests
 
@@ -88,6 +89,103 @@ def refresh_via_keycloak(cookies: list) -> list | None:
         except Exception:
             browser.close()
             return None
+
+
+def refresh_via_sso_http(sso_cookies: list, config: EmaConfig = None) -> list | None:
+    """Get a new EMA session using Keycloak SSO cookies via plain HTTP — no Playwright.
+
+    Works from WSL2 or any environment without a browser. The flow:
+      1. GET /ema/Login.action  →  EMA redirects to Keycloak with a fresh code_challenge
+      2. Keycloak sees KEYCLOAK_SESSION cookie  →  silent re-auth  →  redirects back to EMA
+      3. EMA callback exchanges code for session  →  Set-Cookie headers (incl. httpOnly)
+      4. requests.Session captures all Set-Cookie headers and returns full cookie list
+
+    Args:
+        sso_cookies: List of cookie dicts from sso.ema.md (must include KEYCLOAK_SESSION).
+
+    Returns:
+        List of session cookies (all domains) or None if SSO session is expired.
+    """
+    config = config or EmaConfig()
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    })
+
+    # Inject SSO cookies onto sso.ema.md domain
+    for c in sso_cookies:
+        domain = c.get("domain", "")
+        if "sso.ema.md" in domain:
+            session.cookies.set(c["name"], c["value"], domain="sso.ema.md", path="/")
+
+    try:
+        # Step 1: GET EMA login page — EMA generates PKCE and redirects to Keycloak
+        r1 = session.get(
+            f"{config.base_url}/ema/Login.action",
+            allow_redirects=True, timeout=30,
+        )
+
+        # If already on dashboard (no login needed), extract cookies and return
+        if "practice/staff" in r1.url:
+            return _extract_cookies(session)
+
+        # Step 2: Parse the "Continue as Practice Staff" form.
+        # Login.action renders a POST form (not an href) with hidden fields:
+        #   __disable__, _sourcePage, __fp
+        # The submit button name is "redirectToNonPatientLoginPage".
+        hidden_fields = {}
+        for input_tag in re.finditer(r'<input[^>]+>', r1.text):
+            tag = input_tag.group(0)
+            if 'hidden' not in tag:
+                continue
+            name_m = re.search(r'name=["\']([^"\']+)["\']', tag)
+            value_m = re.search(r'value=["\']([^"\']*)["\']', tag)
+            if name_m and value_m:
+                hidden_fields[name_m.group(1)] = value_m.group(1)
+
+        if not hidden_fields:
+            return None  # Page structure unexpected
+
+        # Build form data: hidden fields + the submit button
+        form_data = {**hidden_fields, "redirectToNonPatientLoginPage": ""}
+
+        # Step 3: POST Login.action — EMA redirects to Keycloak, which sees
+        # KEYCLOAK_SESSION and silently re-auths, then redirects back to EMA,
+        # setting fresh session cookies via Set-Cookie headers.
+        r2 = session.post(
+            f"{config.base_url}/ema/Login.action",
+            data=form_data,
+            allow_redirects=True,
+            timeout=30,
+        )
+
+        if "practice/staff" in r2.url:
+            return _extract_cookies(session)
+
+        return None
+
+    except Exception:
+        return None
+
+
+def _extract_cookies(session: requests.Session) -> list:
+    """Extract all cookies from a requests.Session as a list of dicts."""
+    cookies = []
+    for c in session.cookies:
+        cookies.append({
+            "name": c.name,
+            "value": c.value,
+            "domain": c.domain or "lioraderm.ema.md",
+            "path": c.path or "/",
+        })
+    return cookies or None
 
 
 def load_cookies(path: str = None) -> list | None:
