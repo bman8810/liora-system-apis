@@ -56,6 +56,37 @@ class BrowserTransport:
         )
         time.sleep(1)
 
+        # If redirected to sign-in, perform inline login
+        if "/signin" in self._page.url:
+            self._inline_login()
+
+    def _inline_login(self):
+        """Login to ZocDoc within the current browser context."""
+        email = os.environ.get("ZOCDOC_EMAIL", "")
+        password = os.environ.get("ZOCDOC_PASSWORD", "")
+        if not email or not password:
+            raise RuntimeError(
+                "Zocdoc session expired and ZOCDOC_EMAIL / ZOCDOC_PASSWORD "
+                "env vars are not set for auto-login."
+            )
+
+        email_input = self._page.wait_for_selector(
+            'input[type="email"], input[name="email"]', timeout=10000
+        )
+        email_input.fill(email)
+        time.sleep(0.5)
+        self._page.click('button[type="submit"]')
+        time.sleep(3)
+
+        pass_input = self._page.wait_for_selector(
+            'input[type="password"]:visible', timeout=10000
+        )
+        pass_input.fill(password)
+        time.sleep(0.5)
+        self._page.click('button[type="submit"]')
+        self._page.wait_for_url("**/practice/**", timeout=30000)
+        time.sleep(1)
+
     def stop(self):
         """Close the browser context."""
         if self._ctx:

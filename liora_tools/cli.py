@@ -263,6 +263,14 @@ def auth_save_chrome(args):
     _output(save_from_chrome(args.target, data))
 
 
+# ── Run Commands ───────────────────────────────────────────────────────────
+
+
+def run_zocdoc_new_booking(args):
+    from liora_tools.scripts.zocdoc_new_booking import main
+    main(dry_run=args.dry_run, lookback_minutes=args.lookback_minutes)
+
+
 # ── CLI Builder ─────────────────────────────────────────────────────────────
 
 
@@ -424,6 +432,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("target", choices=["weave", "ema", "zocdoc"],
                    help="Platform to save credentials for")
     p.set_defaults(func=auth_save_chrome)
+
+    # ── Run (standalone scripts) ──
+
+    run = subs.add_parser("run", help="Run standalone automation scripts")
+    r = run.add_subparsers(dest="command", required=True)
+
+    p = r.add_parser("zocdoc-new-booking",
+                     help="Process new patient bookings from ZocDoc")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Log what would happen without taking action")
+    p.add_argument("--lookback-minutes", type=int, default=90,
+                   help="How far back to scan for bookings (default: 90)")
+    p.set_defaults(func=run_zocdoc_new_booking)
 
     return parser
 

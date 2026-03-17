@@ -46,14 +46,23 @@ class GenieBottleClient:
     # -- Internal helpers --
 
     def _get(self, path: str, params: dict = None) -> dict:
-        r = self._s.get(f"{self._cfg.base_url}{path}", params=params)
-        self._check_response(r)
+        r = self._request_with_retry("GET", path, params=params)
         return r.json()
 
     def _post(self, path: str, json: dict = None) -> dict:
-        r = self._s.post(f"{self._cfg.base_url}{path}", json=json)
-        self._check_response(r)
+        r = self._request_with_retry("POST", path, json=json)
         return r.json() if r.text else {"status": r.status_code}
+
+    def _request_with_retry(self, method, path, retries=2, delay=2.5, **kwargs):
+        """Execute request with retry on 5xx errors."""
+        import time
+        url = f"{self._cfg.base_url}{path}"
+        for attempt in range(1 + retries):
+            r = self._s.request(method, url, **kwargs)
+            if r.status_code < 500 or attempt == retries:
+                self._check_response(r)
+                return r
+            time.sleep(delay)
 
     def _check_response(self, r: requests.Response) -> None:
         if r.status_code == 401:
