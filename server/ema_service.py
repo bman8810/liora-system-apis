@@ -59,11 +59,53 @@ def clear_client():
 # -- Patients --
 
 async def search_patients(last_name: str = None, first_name: str = None,
-                          page_size: int = 25) -> list:
+                          phone: str = None, dob: str = None,
+                          mrn: str = None, page_size: int = 25) -> list:
     def _call():
-        return _get_client().search_patients(
-            last_name=last_name, first_name=first_name, page_size=page_size,
+        clauses = []
+        if last_name:
+            clauses.append(f'lastName=="{last_name}"')
+        if first_name:
+            clauses.append(f'firstName=="{first_name}"')
+        if mrn:
+            clauses.append(f'mrn=="{mrn}"')
+        if dob:
+            # EMA needs full timestamp format: 1980-01-08T00:00:00.000+0000
+            dob_ts = dob if "T" in dob else f"{dob}T00:00:00.000+0000"
+            clauses.append(f'dateOfBirth=="{dob_ts}"')
+
+        # Phone isn't queryable server-side — fetch results then filter client-side.
+        # Best used alongside name/DOB to narrow the server-side result set.
+        phone_digits = None
+        if phone:
+            phone_digits = "".join(c for c in phone if c.isdigit())
+
+        where = ";".join(clauses) if clauses else None
+        client = _get_client()
+        selector = "lastName,firstName,mrn,id,dateOfBirth,email,cellPhone,phoneNumbers,patientStatus"
+
+        # When filtering by phone, fetch a larger batch for client-side matching
+        fetch_size = 100 if phone_digits else page_size
+        results = client.list_patients(
+            where=where, page_size=fetch_size, selector=selector,
         )
+
+        if phone_digits:
+            filtered = []
+            for p in results:
+                # Check cellPhone
+                cell = p.get("cellPhone") or {}
+                if cell.get("phoneNumber", "").replace("-", "") == phone_digits:
+                    filtered.append(p)
+                    continue
+                # Check phoneNumbers array
+                for pn in p.get("phoneNumbers") or []:
+                    if pn.get("phoneNumber", "").replace("-", "") == phone_digits:
+                        filtered.append(p)
+                        break
+            return filtered[:page_size]
+
+        return results
     return await asyncio.to_thread(_call)
 
 
@@ -77,6 +119,20 @@ async def send_portal_email(patient_id: str, username: str, email: str) -> None:
     def _call():
         _get_client().send_portal_email(patient_id, username, email)
     await asyncio.to_thread(_call)
+
+
+async def get_patient_appointments(patient_id: str, start_date: str = None,
+                                   end_date: str = None, page_size: int = 50) -> list:
+    def _call():
+        where = f'patient=={patient_id}'
+        return _get_client().list_appointments(
+            start_date=start_date, end_date=end_date,
+            where=where, page_size=page_size,
+            selector="id,scheduledStartDate,scheduledEndDate,scheduledDuration,"
+                     "appointmentTypeName,status,patient(id,lastName,firstName,mrn),"
+                     "provider(id,name),facility(id,name)",
+        )
+    return await asyncio.to_thread(_call)
 
 
 # -- Appointments --
