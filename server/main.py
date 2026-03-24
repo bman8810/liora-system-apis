@@ -30,7 +30,13 @@ app.include_router(reference.router, prefix=prefix)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    import os
+    return {
+        "status": "ok",
+        "api_key_set": bool(os.environ.get("API_KEY")),
+        "api_key_len": len(settings.api_key),
+        "api_key_prefix": settings.api_key[:4],
+    }
 
 
 @app.get("/health/ema", dependencies=[Depends(verify_api_key)])
