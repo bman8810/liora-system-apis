@@ -13,21 +13,32 @@ _client: EmaClient | None = None
 _lock = threading.Lock()
 
 
-def _bootstrap_cookies():
-    """If EMA_COOKIES_B64 env var is set, decode it into the credential store.
+def _client_from_env() -> EmaClient | None:
+    """Try to create an EmaClient directly from the EMA_COOKIES_B64 env var.
 
-    This enables serverless deployments (Vercel) where there's no persistent
-    filesystem — cookies are injected via env var on each cold start.
+    Falls back to writing credentials to disk for the standard get_ema_client()
+    flow if the filesystem is writable.
     """
     b64 = os.environ.get("EMA_COOKIES_B64")
     if not b64:
-        return
+        return None
     try:
         data = json.loads(base64.b64decode(b64))
         cookies = data if isinstance(data, list) else data.get("cookies", data)
-        save_credentials("ema", {"cookies": cookies})
+
+        # Try direct construction first (no filesystem needed)
+        client = EmaClient.from_cookies(cookies)
+        if client.check_session():
+            return client
+
+        # If session check fails, try saving to disk for the full refresh flow
+        try:
+            save_credentials("ema", {"cookies": cookies})
+        except OSError:
+            pass
     except Exception:
         pass
+    return None
 
 
 def _get_client() -> EmaClient:
@@ -35,8 +46,8 @@ def _get_client() -> EmaClient:
     if _client is None:
         with _lock:
             if _client is None:
-                _bootstrap_cookies()
-                _client = get_ema_client()
+                # Try env-var bootstrap first (serverless), then standard flow
+                _client = _client_from_env() or get_ema_client()
     return _client
 
 
