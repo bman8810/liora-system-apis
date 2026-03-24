@@ -3,7 +3,7 @@ name = "liora-tools"
 version = "0.1.0"
 description = "API client library for Liora Dermatology's healthcare platforms"
 requires-python = ">=3.12"
-dependencies = ["requests>=2.31"]
+dependencies = ["requests>=2.31", "fastapi>=0.115", "uvicorn[standard]>=0.34", "pydantic-settings>=2.7"]
 
 [project.optional-dependencies]
 auth = ["playwright>=1.40"]
