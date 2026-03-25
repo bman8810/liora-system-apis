@@ -159,27 +159,70 @@ async def create_appointment(patient_id: int, provider_id: int,
                              new_patient: bool = False) -> dict:
     def _call():
         from datetime import datetime, timedelta
+
+        # EMA requires .000Z format for create
         start_dt = datetime.fromisoformat(scheduled_start.replace("Z", "+00:00"))
         end_dt = start_dt + timedelta(minutes=duration)
-        scheduled_end = end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        start_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        end_str = end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        client = _get_client()
+
+        # EMA v2 create requires full patient, provider, facility, and
+        # appointmentType objects — not just IDs. Fetch them all.
+        patient = client.get_patient(str(patient_id))
+
+        # Get full provider + facility from an existing appointment or facilities list
+        facilities = client.list_facilities()
+        facility_obj = next((f for f in facilities if f["id"] == facility_id), {"id": facility_id})
+
+        # Get full appointment type object
+        appt_types = client.list_appointment_types()
+        appt_type = next((t for t in appt_types if t["id"] == appointment_type_id), {"id": appointment_type_id})
+
+        # Get full provider object from a recent appointment
+        recent = client.list_appointments(page_size=1)
+        if recent:
+            recent_full = client._get(
+                f"/ema/ws/v2/appointment/{recent[0]['id']}", {"mapId": "CHECK_IN"},
+            ).json()
+            provider_obj = recent_full["provider"]
+            # Override with requested provider if different
+            if provider_obj.get("id") != provider_id:
+                provider_obj = {"id": provider_id}
+        else:
+            provider_obj = {"id": provider_id}
 
         payload = {
-            "patient": {"id": patient_id},
-            "provider": {"id": provider_id},
-            "facility": {"id": facility_id},
-            "appointmentType": {"id": appointment_type_id},
-            "scheduledStartDate": scheduled_start,
-            "scheduledEndDate": scheduled_end,
-            "scheduledDuration": duration,
-            "newPatient": new_patient,
             "status": "PENDING",
+            "scheduledStartDate": start_str,
+            "scheduledEndDate": end_str,
+            "scheduledDuration": duration,
+            "provider": provider_obj,
+            "facility": facility_obj,
+            "facilityTimeZone": facility_obj.get("timeZone", "US/Eastern"),
+            "patient": patient,
+            "newPatient": new_patient,
+            "appointmentType": appt_type,
+            "paymentMethod": "MEDICAL",
+            "reportableReason": "MEDICAL_NON_EMERGENCY",
+            "patientPcpAbsent": False,
             "overrideAllowed": True,
+            "additionalProviders": [],
+            "reservations": [],
+            "treatmentCaseAuthorization": None,
+            "treatmentCase": None,
+            "recall": None,
         }
         if reason:
-            payload["reasonForVisit"] = reason
+            payload["notes"] = reason
         if notes:
             payload["notes"] = notes
-        return _get_client().create_appointment(payload)
+
+        # Use mapId=APPOINTMENT_DETAILS — required for v2 create
+        return client._post(
+            "/ema/ws/v2/appointment?mapId=APPOINTMENT_DETAILS", payload,
+        ).json()
     return await asyncio.to_thread(_call)
 
 
