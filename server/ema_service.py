@@ -152,8 +152,33 @@ async def get_appointment(appointment_id: str, selector: str = None) -> dict:
     return await asyncio.to_thread(_call)
 
 
-async def create_appointment(payload: dict) -> dict:
+async def create_appointment(patient_id: int, provider_id: int,
+                             facility_id: int, appointment_type_id: int,
+                             scheduled_start: str, duration: int = 15,
+                             reason: str = "", notes: str = "",
+                             new_patient: bool = False) -> dict:
     def _call():
+        from datetime import datetime, timedelta
+        start_dt = datetime.fromisoformat(scheduled_start.replace("Z", "+00:00"))
+        end_dt = start_dt + timedelta(minutes=duration)
+        scheduled_end = end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        payload = {
+            "patient": {"id": patient_id},
+            "provider": {"id": provider_id},
+            "facility": {"id": facility_id},
+            "appointmentType": {"id": appointment_type_id},
+            "scheduledStartDate": scheduled_start,
+            "scheduledEndDate": scheduled_end,
+            "scheduledDuration": duration,
+            "newPatient": new_patient,
+            "status": "PENDING",
+            "overrideAllowed": True,
+        }
+        if reason:
+            payload["reasonForVisit"] = reason
+        if notes:
+            payload["notes"] = notes
         return _get_client().create_appointment(payload)
     return await asyncio.to_thread(_call)
 
