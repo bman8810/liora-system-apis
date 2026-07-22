@@ -63,6 +63,27 @@ liora_tools/
 
 Auth is fully separated from client classes. Playwright imports are lazy (inside functions) so clients work without Playwright installed — you only need it when logging in fresh.
 
+### Preferred on Hermes: Kernel Liora bridge
+
+Managed Auth on Kernel project **Liora** keeps Zocdoc / Weave / EMA sessions warm.
+The bridge extracts cookies/JWT into `LIORA_CREDENTIALS_DIR` (default `~/.liora/credentials`).
+
+```bash
+export KERNEL_API_KEY=...
+export KERNEL_PROJECT=gxujms2i14jyrds9w3dhrdok   # Liora
+python -m liora_tools auth kernel-status
+python -m liora_tools auth kernel-sync all       # or weave|ema|zocdoc
+python -m liora_tools auth check
+```
+
+```python
+from liora_tools.auth.session_manager import get_client
+# Auto-loads local creds; on miss/expiry tries Kernel sync when available
+client = get_client("weave")
+```
+
+Details: `discovery/kernel-auth-bridge.md`.
+
 ### Weave
 
 Weave uses JWT Bearer tokens stored in the browser's localStorage.
@@ -85,11 +106,14 @@ client = WeaveClient(session)
 
 ### ModMed EMA
 
-EMA uses session cookies via Keycloak SSO. Three-tier persistence strategy:
+EMA uses session cookies via Keycloak SSO. Persistence tiers:
 
 1. **Reuse saved cookies** — instant, no browser
-2. **SSO refresh** — ~3s browser launch, no credentials needed if Keycloak session is alive
-3. **Fresh login** — ~8s with Playwright, needs `EMA_USER` / `EMA_PASS` env vars
+2. **SSO refresh** — HTTP/Keycloak when session cookies still warm
+3. **Kernel Liora bridge** — Managed Auth extract (Hermes)
+4. **Fresh login** — Playwright, needs `EMA_USER` / `EMA_PASS` env vars
+
+Default host is `https://lioraderm.modmedapp.com` (override with `EMA_BASE_URL`).
 
 ```python
 from liora_tools.auth.ema import ensure_session, load_cookies, save_cookies

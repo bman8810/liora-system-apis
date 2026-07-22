@@ -20,7 +20,7 @@ import requests
 
 from liora_tools.auth.session_manager import check_all, get_client, refresh_platform
 from liora_tools.auth.chrome_extract import save_from_chrome
-from liora_tools.exceptions import LioraAPIError
+from liora_tools.exceptions import AuthenticationError, LioraAPIError
 
 PORTAL_URL = os.environ.get("PORTAL_URL", "")
 
@@ -263,6 +263,31 @@ def auth_save_chrome(args):
     _output(save_from_chrome(args.target, data))
 
 
+def auth_kernel_status(args):
+    from liora_tools.auth import kernel_bridge
+    _output(kernel_bridge.kernel_available())
+
+
+def auth_kernel_sync(args):
+    from liora_tools.auth import kernel_bridge
+    platforms = None
+    if args.target and args.target != "all":
+        platforms = [args.target]
+    try:
+        if platforms and len(platforms) == 1:
+            _output(kernel_bridge.sync_platform(
+                platforms[0],
+                require_authenticated=not args.force,
+            ))
+        else:
+            _output(kernel_bridge.sync_all(
+                platforms,
+                require_authenticated=not args.force,
+            ))
+    except AuthenticationError as e:
+        _error(str(e))
+
+
 # ── Run Commands ───────────────────────────────────────────────────────────
 
 
@@ -432,6 +457,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("target", choices=["weave", "ema", "zocdoc"],
                    help="Platform to save credentials for")
     p.set_defaults(func=auth_save_chrome)
+
+    p = a.add_parser(
+        "kernel-status",
+        help="Show Kernel Liora Managed Auth readiness (no browser session)",
+    )
+    p.set_defaults(func=auth_kernel_status)
+
+    p = a.add_parser(
+        "kernel-sync",
+        help="Pull cookies/JWT from Kernel Liora profile into local credential store",
+    )
+    p.add_argument(
+        "target",
+        nargs="?",
+        default="all",
+        choices=["all", "weave", "ema", "zocdoc"],
+        help="Platform to sync (default: all AUTHENTICATED connections)",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Attempt extract even if Managed Auth status is not AUTHENTICATED",
+    )
+    p.set_defaults(func=auth_kernel_sync)
 
     # ── Run (standalone scripts) ──
 
