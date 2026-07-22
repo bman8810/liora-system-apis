@@ -435,6 +435,21 @@ All write methods automatically include `agent_id` from config (default: `"claud
 
 ---
 
+## Production jobs
+
+### Zocdoc new-patient booking
+
+Hardened job with Genies Bottle `correlation_id`, file lock, step-level resume, and template-only SMS:
+
+```bash
+python -m liora_tools run zocdoc-new-booking --dry-run
+python -m liora_tools run zocdoc-new-booking --lookback-minutes=90
+```
+
+Docs: `discovery/zocdoc-new-booking-job.md` · runbook: `discovery/zocdoc-new-patient-processing.md`.
+
+---
+
 ## Environment Variables
 
 | Variable | Used by | Description |
@@ -445,3 +460,5 @@ All write methods automatically include `agent_id` from config (default: `"claud
 | `ZOCDOC_EMAIL` | Zocdoc | Login email |
 | `ZOCDOC_PASSWORD` | Zocdoc | Login password |
 | `GENIE_BOTTLE_API_KEY` | Genies Bottle | API key for dashboard access |
+| `KERNEL_PROJECT` | Auth bridge | Kernel project id/name (Liora) |
+| `LIORA_CREDENTIALS_DIR` | Auth | Credential JSON directory |
