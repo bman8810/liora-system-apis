@@ -153,9 +153,13 @@ class CallManager:
                 logger.warning("AI session not ready in 10s, proceeding anyway")
 
             # Phase 7: Start audio pipeline
-            logger.info("=== Phase 7: Audio Pipeline ===")
+            # direction: outbound = we dialed (wait for them); inbound = we answered (greet now)
+            direction = "outbound" if self.destination else "inbound"
+            logger.info("=== Phase 7: Audio Pipeline (direction=%s) ===", direction)
             logger.info("AI session ready + media established — starting audio pipeline")
-            self.pipeline = AudioPipeline(self.media, self.bridge)
+            self.pipeline = AudioPipeline(
+                self.media, self.bridge, direction=direction
+            )
             await self.pipeline.start()
             logger.info("Audio pipeline active — call is live!")
 
