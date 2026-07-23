@@ -24,17 +24,25 @@ class WeaveConfig:
     api_base: str = "https://api.weaveconnect.com"
     location_id: str = "d8508d79-c71c-4678-b139-eaedb19c2159"
     tenant_id: str = "1cdad4ca-9dbe-45f2-8263-c998c1dfec98"
-    user_id: str = "8b835d4b-d6b3-4e81-a204-6ac39835ba2b"
+    # Barric Reed (voice product B). Genie Bot user id is not used on this path.
+    user_id: str = "2a3680fd-7e02-49f2-8bff-506fe1e54a0f"
     location_phone: str = "+12124334569"
-    softphone_id: str = "dd2b2484-f5f0-43d2-8029-9a140f958fed"
-    sip_profile_id: str = "c6d657dc-fbdd-47bd-b6e6-bc055dcd3346"
+    # Barric R softphone 7002 (not Genie 7018)
+    softphone_id: str = "fab463cd-fc4e-406c-8779-d6c5cf8807e5"
+    sip_profile_id: str = "2d99f557-a65a-4148-9a72-9c645017eeda"
     from_number: str = "2124334569"
     from_name: str = "Liora Dermatology & Aesthetics"
     allowed_send_phones: Set[str] = field(
         default_factory=lambda: {"+13302067819", "+19179401010", "+19179415577"}
     )
+    # Includes Twilio sink C DID for voice B→C lab dials
     allowed_dial_phones: Set[str] = field(
-        default_factory=lambda: {"+13302067819", "+19179401010", "+19179415577"}
+        default_factory=lambda: {
+            "+13302067819",
+            "+18885270186",
+            "+19179401010",
+            "+19179415577",
+        }
     )
 
 

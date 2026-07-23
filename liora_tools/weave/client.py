@@ -205,12 +205,37 @@ class WeaveClient:
     def fetch_sip_credentials(self) -> dict:
         """Extract SIP credentials from softphone settings.
 
-        Returns dict with keys: username, password, domain, proxy, extension, sip_profile_id.
+        Prefers Barric softphone extension 7002 when present.
+        Returns dict with keys: username, password, domain, proxy, extension,
+        sip_profile_id, softphone_id.
         """
         data = self.get_softphone_settings()
         proxy = data["proxy"]
-        softphone = data["softphones"][0]
-        sip_profile = softphone["sipProfiles"][0]
+        softphones = data.get("softphones") or []
+        if not softphones:
+            raise RuntimeError("No softphones in settings response")
+
+        target_ext = 7002
+        softphone = None
+        sip_profile = None
+        for sp in softphones:
+            for prof in sp.get("sipProfiles") or []:
+                if int(prof.get("extensionNumber") or 0) == target_ext:
+                    softphone, sip_profile = sp, prof
+                    break
+            if softphone:
+                break
+        if not softphone or not sip_profile:
+            softphone = softphones[0]
+            profiles = softphone.get("sipProfiles") or []
+            if not profiles:
+                raise RuntimeError("Softphone has no sipProfiles")
+            sip_profile = profiles[0]
+
+        # Keep client config aligned with live profile for dial/registration
+        self._cfg.softphone_id = softphone["id"]
+        self._cfg.sip_profile_id = sip_profile["id"]
+
         return {
             "username": sip_profile["username"],
             "password": sip_profile["password"],
@@ -218,6 +243,7 @@ class WeaveClient:
             "proxy": proxy,
             "extension": sip_profile["extensionNumber"],
             "sip_profile_id": sip_profile["id"],
+            "softphone_id": softphone["id"],
         }
 
     def list_sip_profiles(self) -> dict:
@@ -231,8 +257,11 @@ class WeaveClient:
         })
 
     def dial(self, destination: str) -> dict:
-        """Initiate an outbound call."""
+        """Initiate an outbound call (allowlist enforced)."""
+        from liora_tools.utils import check_safety_guard, normalize_phone_e164
+
         phone = normalize_phone_e164(destination)
+        check_safety_guard(phone, self._cfg.allowed_dial_phones, "dial")
 
         # Weave dial API expects 10-digit number without country code
         digits = phone[2:]  # strip +1
