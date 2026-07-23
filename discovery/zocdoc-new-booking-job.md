@@ -26,11 +26,15 @@ Module form: `python -m liora_tools.scripts.zocdoc_new_booking --dry-run`
 
 1. Report **running** → Genies Bottle (`correlation_id`)
 2. **Call-the-office** on Zocdoc (`requestId`, $100 fee avoidance ≤24h)
-3. **EMA portal** activate (omit `cellPhone`)
-4. **Weave SMS** — template "Genie - New Zocdoc Patient" only
-5. Report **completed** / **failed** — **same** `correlation_id` (upsert)
+3. **GB checkpoint** (running + steps) so resume sees call done if later crash
+4. **EMA portal** activate (omit `cellPhone`)
+5. **Weave SMS** — template "Genie - New Zocdoc Patient" only (`correlation_id` in `relatedIds`, not body)
+6. Report **completed** / **failed** — **same** `correlation_id` (upsert)
 
 ## correlation_id
+
+Canonical field name (coordinate across GB + job + Weave metadata): always
+**`correlation_id`**.
 
 ```
 zocdoc-{appointmentId}
@@ -38,12 +42,51 @@ zocdoc-{appointmentId}
 
 Fallback if appointment id missing: `zocdoc-{mrn}-{appt_date}`.
 
+Never put PHI into `correlation_id`. Never put `correlation_id` in the
+patient-facing SMS body.
+
+Job validates loudly via `validate_correlation_id` before side effects:
+must be non-blank, start with `zocdoc-`, length ≥ 8.
+
 GB webhook upserts on `correlation_id`, so running → completed updates one
-execution. Ops can filter:
+execution.
+
+### Ops: query by correlation_id
 
 ```python
-gb.query_executions(task_slug="zocdoc-new-booking", correlation_id="zocdoc-app_…")
+rows = gb.query_executions(
+    task_slug="zocdoc-new-booking",
+    correlation_id="zocdoc-app_…",
+)
+# Each row includes (after GB deploy): steps, appointment, metadata,
+# started_at / completed_at / updated_at, plus status / error_message / patient.
 ```
+
+Use `steps` on the prior execution for step-level resume (call / portal / SMS).
+
+### Activity action names (step audit trail)
+
+Best-effort `log_activity` after each side effect. Payload is **corr + step
+status only** (no phone/body/email):
+
+| Action | When | payload keys |
+|--------|------|--------------|
+| `zocdoc_call_request` | after call-request done/skipped | `correlation_id`, `step=call_request`, `status` |
+| `ema_portal` | after portal done/failed/skipped | `correlation_id`, `step=ema_portal`, `status` |
+| `weave_sms` | after SMS done/skipped | `correlation_id`, `step=weave_sms`, `status`, optional Weave id keys only |
+| `zocdoc_new_patient_processed` | on full success | `correlation_id` |
+
+### SMS relatedIds / metadata path
+
+`WeaveClient.send_message(..., correlation_id=cid)` appends to Weave
+`relatedIds`:
+
+```json
+{"type": "correlation_id", "id": "zocdoc-app_…"}
+```
+
+No correlation id in SMS body. On success, GB metadata may store Weave
+`smsId` / `threadId` / `personId` keys only (no phone).
 
 ## Idempotency / retry
 
@@ -52,6 +95,7 @@ gb.query_executions(task_slug="zocdoc-new-booking", correlation_id="zocdoc-app_�
 | File lock | `~/.liora/locks/zocdoc-new-booking.lock` (fcntl); overlapping ticks exit `status=locked` |
 | GB completed | Skip patient entirely |
 | Step resume | If prior execution has call/portal/SMS `done`/`skipped`, do not re-send |
+| Call checkpoint | After call_request success, GB `running`+steps before portal/SMS |
 | Weave search | SMS skipped if $100 template fingerprint already present |
 | Portal | Skipped if EMA `username` already set |
 
@@ -97,13 +141,16 @@ Exit codes: `0` ok, `2` auth, `3` booking list failure.
 
 ## Failure surfacing
 
-On per-patient error (live):
+On per-patient error (live), **`process_one` owns reporting** (with current
+`steps`) and returns `"error"` so main does not double-report:
 
-1. `gb.report_process(..., status="failed", correlation_id=..., error_message=redacted)`
+1. `gb.report_process(..., status="failed", correlation_id=..., steps=steps, error_message=redacted)`
 2. `gb.request_feedback(..., priority="high", bot_context.correlation_id=...)`
-3. Continue to next candidate
+3. Main increments `errors` and continues to next candidate
 
-Scan-level list failures open high-priority feedback without patient PHI.
+Main only calls `report_failure` for exceptions raised outside that path
+(e.g. before steps started). Scan-level list failures open high-priority
+feedback without patient PHI.
 
 ## Cron (separate task)
 

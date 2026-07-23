@@ -90,9 +90,27 @@ class WeaveClient:
             "pageSize": str(page_size),
         })
 
-    def send_message(self, person_phone: str, body: str, person_id: str = None) -> dict:
-        """Send an SMS."""
+    def send_message(self, person_phone: str, body: str, person_id: str = None,
+                     related_ids: list = None, correlation_id: str = None) -> dict:
+        """Send an SMS.
+
+        Args:
+            person_phone: Destination phone (normalized to E.164).
+            body: Message body (do not put correlation_id here).
+            person_id: Optional Weave person id.
+            related_ids: Optional list for Weave ``relatedIds`` (strings or
+                dicts). Defaults to [].
+            correlation_id: Optional stable ops id. Appended to relatedIds as
+                ``{"type": "correlation_id", "id": ...}`` for handoff tracing
+                without putting the id in the patient-facing body.
+        """
         phone = normalize_phone_e164(person_phone)
+
+        ids: list = list(related_ids) if related_ids else []
+        if correlation_id:
+            cid = str(correlation_id).strip()
+            if cid:
+                ids.append({"type": "correlation_id", "id": cid})
 
         payload = {
             "locationId": self._cfg.location_id,
@@ -104,7 +122,7 @@ class WeaveClient:
             "messageType": "MESSAGING_MANUAL",
             "body": body,
             "media": [],
-            "relatedIds": [],
+            "relatedIds": ids,
             "id": str(uuid.uuid4()),
         }
         if person_id:

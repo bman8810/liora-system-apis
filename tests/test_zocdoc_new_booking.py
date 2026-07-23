@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
+from liora_tools.genies_bottle.client import GenieBottleClient
 from liora_tools.scripts.zocdoc_new_booking import (
     SMS_FINGERPRINT,
     SMS_TEMPLATE_BODY,
@@ -13,11 +15,15 @@ from liora_tools.scripts.zocdoc_new_booking import (
     build_correlation_id,
     extract_candidates,
     make_step,
+    process_one,
     render_sms,
+    report_failure,
     step_done,
+    validate_correlation_id,
     _mask_email,
     _mask_phone,
     _redact_error,
+    _safe_log_activity,
 )
 
 
@@ -29,6 +35,99 @@ def test_build_correlation_id_prefers_appointment():
 def test_build_correlation_id_fallback():
     cid = build_correlation_id("", mrn="MRN-1", appt_date="2026-07-22")
     assert cid == "zocdoc-MRN-1-2026-07-22"
+
+
+def test_validate_correlation_id_accepts_good():
+    assert validate_correlation_id("zocdoc-app_ABC") == "zocdoc-app_ABC"
+    assert validate_correlation_id("  zocdoc-x  ") == "zocdoc-x"
+
+
+def test_validate_correlation_id_rejects_empty():
+    with pytest.raises(ValueError, match="blank|required"):
+        validate_correlation_id("")
+    with pytest.raises(ValueError, match="blank|required"):
+        validate_correlation_id("   ")
+    with pytest.raises(ValueError, match="required"):
+        validate_correlation_id(None)
+
+
+def test_validate_correlation_id_rejects_non_zocdoc_prefix():
+    with pytest.raises(ValueError, match="zocdoc-"):
+        validate_correlation_id("booking-app_123")
+    with pytest.raises(ValueError, match="too short"):
+        validate_correlation_id("zocdoc")  # no hyphen+rest / len < 8
+
+
+def test_safe_log_activity_payload_no_phi():
+    gb = MagicMock()
+    _safe_log_activity(
+        gb, "weave_sms", "sms done",
+        correlation_id="zocdoc-app_1", step="weave_sms", status="done",
+        extra={"smsId": "s1", "threadId": "t1", "phone": "+12125551212", "body": "secret"},
+    )
+    gb.log_activity.assert_called_once()
+    kwargs = gb.log_activity.call_args
+    payload = kwargs.kwargs.get("payload") or kwargs[1].get("payload")
+    assert payload == {
+        "correlation_id": "zocdoc-app_1",
+        "step": "weave_sms",
+        "status": "done",
+        "smsId": "s1",
+        "threadId": "t1",
+    }
+    assert "phone" not in payload
+    assert "body" not in payload
+
+
+def test_report_process_rejects_blank_correlation_id():
+    client = GenieBottleClient.__new__(GenieBottleClient)
+    with pytest.raises(ValueError, match="correlation_id"):
+        client.report_process("zocdoc-new-booking", "running", correlation_id="  ")
+
+
+def test_process_one_failure_reports_with_steps(monkeypatch):
+    """process_one reports failure WITH steps and returns error (no raise)."""
+    appt = {
+        "appointmentId": "app_fail_1",
+        "patientType": "NEW",
+        "mrn": "M1",
+        "appointmentTimeUtc": "2026-07-22T12:00:00Z",
+        "patient": {"firstName": "Pat", "lastName": "Ient"},
+        "requestId": None,
+    }
+    zoc = MagicMock()
+    zoc.get_booking.return_value = {
+        "data": {"appointmentDetails": {"patient": {}, "requestId": None}}
+    }
+    weave = MagicMock()
+    ema = MagicMock()
+    ema.search_patients.return_value = []
+    gb = MagicMock()
+    gb.query_executions.return_value = []
+    gb.report_process.return_value = {"id": "x", "status": "running"}
+
+    result = process_one(
+        appt=appt,
+        zoc=zoc,
+        weave=weave,
+        ema=ema,
+        gb=gb,
+        sms_template=SMS_TEMPLATE_BODY,
+        dry_run=False,
+        force=False,
+    )
+    assert result == "error"
+    # failed report should include steps
+    failed_calls = [
+        c for c in gb.report_process.call_args_list
+        if (c.args[1] if len(c.args) > 1 else c.kwargs.get("status")) == "failed"
+        or c.kwargs.get("status") == "failed"
+    ]
+    assert failed_calls, "expected report_process(..., status='failed')"
+    failed_kw = failed_calls[0].kwargs
+    assert failed_kw.get("steps"), "failure report must include steps"
+    assert failed_kw.get("correlation_id") == "zocdoc-app_fail_1"
+    gb.request_feedback.assert_called()
 
 
 def test_extract_candidates_filters():

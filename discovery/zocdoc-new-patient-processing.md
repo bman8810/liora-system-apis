@@ -14,11 +14,13 @@ For each new Zocdoc patient:
 
 **Why the Zocdoc call request matters:** Each Zocdoc booking costs the practice $100. By having the patient call the office directly, the practice can cancel the Zocdoc booking and rebook directly, avoiding the fee. This must happen within 24 hours of the booking time.
 
-**Important:** Always pass a `correlation_id` on both the "running" and "completed" calls so the second call **updates** the existing execution rather than creating a new one.
+**Important:** Always pass a `correlation_id` on both the "running" and "completed" calls so the second call **updates** the existing execution rather than creating a new one. Field name is always **`correlation_id`** (coordinate with GB + Weave metadata). Never put PHI in the id; never put the id in the patient-facing SMS body.
 
 ```python
-# Prefer appointmentId (unique per booking). Fallback: zocdoc-{mrn}-{appt_date}
+# Primary: appointmentId (unique per booking).
+# Fallback only if appointment id missing: zocdoc-{mrn}-{YYYY-MM-DD}
 correlation_id = f"zocdoc-{appointment_id}"
+# validate_correlation_id(correlation_id)  # fail-loud before side effects
 
 gb.report_process("zocdoc-new-booking", "running",
     correlation_id=correlation_id,
@@ -26,7 +28,9 @@ gb.report_process("zocdoc-new-booking", "running",
     patient={"mrn": mrn, "name": name},  # avoid full phone/email in GB
     steps=[{"step": 1, "action": "Pulled appointment from ZocDoc", "status": "done"}])
 
-# ... call request → portal → SMS (order matters) ...
+# ... call request → GB checkpoint (steps) → portal → SMS (order matters) ...
+# SMS: weave.send_message(phone, body, correlation_id=correlation_id)
+#      → relatedIds metadata only; body stays template text
 
 gb.report_process("zocdoc-new-booking", "completed",
     correlation_id=correlation_id,  # same ID = update
@@ -39,6 +43,11 @@ gb.report_process("zocdoc-new-booking", "completed",
         {"step": 4, "action": "Sent Genie SMS via Weave", "status": "done"},
     ])
 ```
+
+Ops lookup: `gb.query_executions(task_slug="zocdoc-new-booking", correlation_id=...)`
+returns `steps` / `appointment` / `metadata` (after GB deploy) for resume and audit.
+Step activities: `zocdoc_call_request`, `ema_portal`, `weave_sms` (payload =
+`correlation_id` + step status only).
 
 **Production job:** `python -m liora_tools run zocdoc-new-booking [--dry-run]`.
 Details, lock, idempotency, PHI rules: [zocdoc-new-booking-job.md](./zocdoc-new-booking-job.md).
@@ -140,7 +149,7 @@ We look forward to hearing from you soon!
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | Transient 500 errors | Server-side flakiness | Retry once, or use direct `requests.post()` as fallback |
-| **Must use `correlation_id` on both calls** | Without it, "running" and "completed" create 2 separate executions | Generate a deterministic `correlation_id` (e.g. `zocdoc-{mrn}-{date}`) and pass it on both the "running" and "completed" `report_process()` calls. Portal now upserts by `correlation_id`. |
+| **Must use `correlation_id` on both calls** | Without it, "running" and "completed" create 2 separate executions | Prefer `zocdoc-{appointmentId}`; fallback `zocdoc-{mrn}-{YYYY-MM-DD}`. Pass the same id on running/completed/failed. Empty/whitespace `correlation_id` is rejected (fail-loud). |
 | `list_executions()` returns 401 with API key | JWT-only endpoint | Use `query_executions()` instead — hits `GET /api/webhooks/executions` which accepts X-API-Key auth. Supports `task_slug`, `status`, `patient_mrn`, `patient_name`, `correlation_id` filters. |
 
 ---

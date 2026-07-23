@@ -162,6 +162,67 @@ def build_correlation_id(appointment_id: str, mrn: str | None = None,
     return f"zocdoc-{mrn_s}-{date_s}"
 
 
+def validate_correlation_id(cid: str | None) -> str:
+    """Fail loud on missing/blank/invalid correlation_id before side effects.
+
+    Rules (light PHI guard):
+    - non-empty after strip
+    - must start with ``zocdoc-``
+    - length >= 8 (covers prefix + at least one char)
+    """
+    if cid is None:
+        raise ValueError(
+            "correlation_id is required; pass a stable id e.g. zocdoc-{appointmentId}"
+        )
+    cleaned = str(cid).strip()
+    if not cleaned:
+        raise ValueError(
+            "correlation_id is blank/whitespace; pass a stable id e.g. "
+            "zocdoc-{appointmentId}"
+        )
+    if len(cleaned) < 8:
+        raise ValueError(
+            f"correlation_id too short ({len(cleaned)} chars); expected "
+            "zocdoc-{{appointmentId}} (length >= 8)"
+        )
+    if not cleaned.startswith("zocdoc-"):
+        raise ValueError(
+            f"correlation_id must start with 'zocdoc-' (got prefix "
+            f"{cleaned[:20]!r}); never put PHI in correlation_id"
+        )
+    return cleaned
+
+
+# Weave / ops id keys allowed on activity payloads (never phone/body/email)
+_ACTIVITY_SAFE_EXTRA_KEYS = frozenset({
+    "smsId", "threadId", "personId", "checkpoint",
+})
+
+
+def _safe_log_activity(gb, action: str, description: str, *,
+                       correlation_id: str, step: str, status: str,
+                       extra: dict | None = None) -> None:
+    """Best-effort structured activity — correlation_id + step status only (no PHI)."""
+    payload: dict[str, Any] = {
+        "correlation_id": correlation_id,
+        "step": step,
+        "status": status,
+    }
+    if extra:
+        for k, v in extra.items():
+            if k in _ACTIVITY_SAFE_EXTRA_KEYS and v is not None:
+                payload[k] = v
+    try:
+        gb.log_activity(
+            action,
+            description,
+            source="zocdoc-new-booking",
+            payload=payload,
+        )
+    except Exception:
+        pass
+
+
 def step_done(steps: list | None, *names: str) -> bool:
     """True if any named step is already marked done."""
     if not steps:
@@ -451,7 +512,11 @@ def process_one(
     dry_run: bool,
     force: bool = False,
 ) -> str:
-    """Process a single booking. Returns status: processed|skipped|error|dry-run."""
+    """Process a single booking. Returns status: processed|skipped|error|dry-run.
+
+    On failure after steps have started, reports to GB with current steps and
+    returns ``\"error\"`` (main must not double-report).
+    """
     appointment_id = appt.get("appointmentId") or ""
     patient_obj = appt.get("patient") or {}
     first_name = patient_obj.get("firstName") or ""
@@ -463,7 +528,9 @@ def process_one(
         appt.get("appointmentTimeUtc")
         or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     )[:10]
-    correlation_id = build_correlation_id(appointment_id, mrn=str(mrn), appt_date=appt_date)
+    correlation_id = validate_correlation_id(
+        build_correlation_id(appointment_id, mrn=str(mrn), appt_date=appt_date)
+    )
 
     prior = None if force else gb_prior_execution(gb, correlation_id)
     if prior and str(prior.get("status")) == "completed" and not force:
@@ -552,121 +619,173 @@ def process_one(
         # Still attempt work; completion report may recover
         print(f"  WARN {display}: GB running report failed: {_redact_error(e)}")
 
-    # Step 2: Zocdoc call-the-office ($100 fee window)
-    if call_already:
-        steps.append(make_step(2, "Sent call office request on ZocDoc", "skipped",
-                               "already done on prior run"))
-    elif request_id:
-        try:
-            zoc.send_call_request(str(request_id), reasons=["Other"])
-            steps.append(make_step(2, "Sent call office request on ZocDoc", "done",
-                                   "requestId present"))
-        except Exception as e:
-            steps.append(make_step(2, "Sent call office request on ZocDoc", "failed",
-                                   _redact_error(e)))
-            raise RuntimeError(f"call_request failed: {_redact_error(e)}") from e
-    else:
-        steps.append(make_step(2, "Sent call office request on ZocDoc", "failed",
-                               "No requestId — cannot send call request"))
-        raise RuntimeError("missing requestId for call request ($100 fee step)")
-
-    # Step 3: EMA portal activate (omit cellPhone — client enforces)
-    if portal_already or portal_active:
-        steps.append(make_step(3, "Activated patient portal in ModMed", "skipped",
-                               "already active or done"))
-    elif ema_patient_id and email:
-        try:
-            # username = email per historical practice
-            ema.send_portal_email(str(ema_patient_id), email, email)
-            steps.append(make_step(3, "Activated patient portal in ModMed", "done"))
-        except Exception as e:
-            # Portal failure is non-fatal for fee path; surface but continue to SMS
-            steps.append(make_step(3, "Activated patient portal in ModMed", "failed",
-                                   _redact_error(e)))
-    else:
-        steps.append(make_step(3, "Activated patient portal in ModMed", "skipped",
-                               "missing ema patient or email"))
-
-    # Step 4: Weave SMS (template only)
-    if sms_already or weave_has_sms:
-        steps.append(make_step(4, "Sent Genie SMS via Weave", "skipped",
-                               "already messaged"))
-    elif phone:
-        try:
-            body = render_sms(sms_template, actual_first)
-            if SMS_FINGERPRINT not in body or "{{FIRST_NAME}}" in body:
-                raise RuntimeError("refusing to send non-template or unsubstituted SMS")
-            resp = weave.send_message(phone, body)
-            meta = {}
-            if isinstance(resp, dict):
-                for k in ("smsId", "threadId", "personId"):
-                    if resp.get(k):
-                        meta[k] = resp[k]
-            detail = "sms sent"
-            if meta:
-                detail += f" ids={list(meta.keys())}"
-            steps.append(make_step(4, "Sent Genie SMS via Weave", "done", detail))
-            # Keep thread ids on GB without phone
-            try:
-                gb.report_process(
-                    TASK_SLUG,
-                    "running",
-                    correlation_id=correlation_id,
-                    steps=steps,
-                    metadata={"weave": meta} if meta else None,
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            steps.append(make_step(4, "Sent Genie SMS via Weave", "failed",
-                                   _redact_error(e)))
-            raise RuntimeError(f"sms failed: {_redact_error(e)}") from e
-    else:
-        steps.append(make_step(4, "Sent Genie SMS via Weave", "failed", "no phone"))
-        raise RuntimeError("missing phone for SMS")
-
-    # Critical path: call_request must be done; SMS done or skipped-as-already
-    call_ok = step_done(steps, "call")
-    sms_ok = step_done(steps, "sms", "weave", "welcome")
-    if not call_ok:
-        raise RuntimeError("call request step not successful")
-    if not sms_ok:
-        raise RuntimeError("sms step not successful")
-
-    completed_at = datetime.now(timezone.utc).isoformat()
-    outcome_bits = []
-    for s in steps:
-        if s.get("status") == "done":
-            outcome_bits.append(str(s.get("action")))
-    gb.report_process(
-        TASK_SLUG,
-        "completed",
-        correlation_id=correlation_id,
-        patient=_patient_gb_payload(str(mrn), patient_name, phone),
-        appointment={"id": appointment_id, "date": appt_date},
-        steps=steps,
-        outcome_summary="; ".join(outcome_bits) or "Processed new Zocdoc patient",
-        completed_at=completed_at,
-        duration_ms=int(
-            (datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at))
-            .total_seconds()
-            * 1000
-        ),
-        metadata={"job": "zocdoc_new_booking", "version": 2},
-    )
     try:
-        gb.log_activity(
-            "zocdoc_new_patient_processed",
-            f"Processed new ZocDoc patient corr={correlation_id}",
-            source="zocdoc-cron",
-            patient=_patient_gb_payload(str(mrn), patient_name),
-            payload={"correlation_id": correlation_id},
-        )
-    except Exception:
-        pass
+        # Step 2: Zocdoc call-the-office ($100 fee window)
+        if call_already:
+            steps.append(make_step(2, "Sent call office request on ZocDoc", "skipped",
+                                   "already done on prior run"))
+            call_status = "skipped"
+        elif request_id:
+            try:
+                zoc.send_call_request(str(request_id), reasons=["Other"])
+                steps.append(make_step(2, "Sent call office request on ZocDoc", "done",
+                                       "requestId present"))
+                call_status = "done"
+            except Exception as e:
+                steps.append(make_step(2, "Sent call office request on ZocDoc", "failed",
+                                       _redact_error(e)))
+                raise RuntimeError(f"call_request failed: {_redact_error(e)}") from e
+        else:
+            steps.append(make_step(2, "Sent call office request on ZocDoc", "failed",
+                                   "No requestId — cannot send call request"))
+            raise RuntimeError("missing requestId for call request ($100 fee step)")
 
-    print(f"  OK {display} corr={correlation_id}")
-    return "processed"
+        _safe_log_activity(
+            gb, "zocdoc_call_request",
+            f"call_request {call_status} corr={correlation_id}",
+            correlation_id=correlation_id, step="call_request", status=call_status,
+        )
+
+        # Checkpoint after call_request so resume sees call done if later crash
+        try:
+            gb.report_process(
+                TASK_SLUG,
+                "running",
+                correlation_id=correlation_id,
+                steps=steps,
+                metadata={"job": "zocdoc_new_booking", "version": 2,
+                          "checkpoint": "after_call_request"},
+            )
+        except Exception:
+            pass
+
+        # Step 3: EMA portal activate (omit cellPhone — client enforces)
+        if portal_already or portal_active:
+            steps.append(make_step(3, "Activated patient portal in ModMed", "skipped",
+                                   "already active or done"))
+            portal_status = "skipped"
+        elif ema_patient_id and email:
+            try:
+                # username = email per historical practice
+                ema.send_portal_email(str(ema_patient_id), email, email)
+                steps.append(make_step(3, "Activated patient portal in ModMed", "done"))
+                portal_status = "done"
+            except Exception as e:
+                # Portal failure is non-fatal for fee path; surface but continue to SMS
+                steps.append(make_step(3, "Activated patient portal in ModMed", "failed",
+                                       _redact_error(e)))
+                portal_status = "failed"
+        else:
+            steps.append(make_step(3, "Activated patient portal in ModMed", "skipped",
+                                   "missing ema patient or email"))
+            portal_status = "skipped"
+
+        _safe_log_activity(
+            gb, "ema_portal",
+            f"portal {portal_status} corr={correlation_id}",
+            correlation_id=correlation_id, step="ema_portal", status=portal_status,
+        )
+
+        # Step 4: Weave SMS (template only)
+        weave_meta: dict = {}
+        if sms_already or weave_has_sms:
+            steps.append(make_step(4, "Sent Genie SMS via Weave", "skipped",
+                                   "already messaged"))
+            sms_status = "skipped"
+        elif phone:
+            try:
+                body = render_sms(sms_template, actual_first)
+                if SMS_FINGERPRINT not in body or "{{FIRST_NAME}}" in body:
+                    raise RuntimeError("refusing to send non-template or unsubstituted SMS")
+                # correlation_id goes to relatedIds metadata only — never SMS body
+                resp = weave.send_message(phone, body, correlation_id=correlation_id)
+                if isinstance(resp, dict):
+                    for k in ("smsId", "threadId", "personId"):
+                        if resp.get(k):
+                            weave_meta[k] = resp[k]
+                detail = "sms sent"
+                if weave_meta:
+                    detail += f" ids={list(weave_meta.keys())}"
+                steps.append(make_step(4, "Sent Genie SMS via Weave", "done", detail))
+                sms_status = "done"
+                # Keep thread ids on GB without phone
+                try:
+                    gb.report_process(
+                        TASK_SLUG,
+                        "running",
+                        correlation_id=correlation_id,
+                        steps=steps,
+                        metadata={"weave": weave_meta} if weave_meta else None,
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                steps.append(make_step(4, "Sent Genie SMS via Weave", "failed",
+                                       _redact_error(e)))
+                raise RuntimeError(f"sms failed: {_redact_error(e)}") from e
+        else:
+            steps.append(make_step(4, "Sent Genie SMS via Weave", "failed", "no phone"))
+            raise RuntimeError("missing phone for SMS")
+
+        _safe_log_activity(
+            gb, "weave_sms",
+            f"sms {sms_status} corr={correlation_id}",
+            correlation_id=correlation_id, step="weave_sms", status=sms_status,
+            extra={k: weave_meta[k] for k in ("smsId", "threadId", "personId")
+                   if k in weave_meta} or None,
+        )
+
+        # Critical path: call_request must be done; SMS done or skipped-as-already
+        call_ok = step_done(steps, "call")
+        sms_ok = step_done(steps, "sms", "weave", "welcome")
+        if not call_ok:
+            raise RuntimeError("call request step not successful")
+        if not sms_ok:
+            raise RuntimeError("sms step not successful")
+
+        completed_at = datetime.now(timezone.utc).isoformat()
+        outcome_bits = []
+        for s in steps:
+            if s.get("status") == "done":
+                outcome_bits.append(str(s.get("action")))
+        gb.report_process(
+            TASK_SLUG,
+            "completed",
+            correlation_id=correlation_id,
+            patient=_patient_gb_payload(str(mrn), patient_name, phone),
+            appointment={"id": appointment_id, "date": appt_date},
+            steps=steps,
+            outcome_summary="; ".join(outcome_bits) or "Processed new Zocdoc patient",
+            completed_at=completed_at,
+            duration_ms=int(
+                (datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at))
+                .total_seconds()
+                * 1000
+            ),
+            metadata={"job": "zocdoc_new_booking", "version": 2},
+        )
+        try:
+            gb.log_activity(
+                "zocdoc_new_patient_processed",
+                f"Processed new ZocDoc patient corr={correlation_id}",
+                source="zocdoc-cron",
+                patient=_patient_gb_payload(str(mrn), patient_name),
+                payload={"correlation_id": correlation_id},
+            )
+        except Exception:
+            pass
+
+        print(f"  OK {display} corr={correlation_id}")
+        return "processed"
+    except Exception as e:
+        # Own failure reporting WITH steps so main does not double-report without them
+        if not dry_run:
+            report_failure(gb, correlation_id, patient_name, str(mrn), e, steps=steps)
+        print(
+            f"  ERROR {display} corr={correlation_id}: {_redact_error(e)}",
+            file=sys.stderr,
+        )
+        return "error"
 
 
 def report_failure(gb, correlation_id: str, patient_name: str, mrn: str,
@@ -834,9 +953,13 @@ def main(
                 counts["processed"] += 1
             elif result == "dry-run":
                 counts["dry_run"] += 1
+            elif result == "error":
+                # process_one already reported failure WITH steps
+                counts["errors"] += 1
             else:
                 counts["skipped"] += 1
         except Exception as e:
+            # Only failures before/outside process_one's own reporting (e.g. validate)
             counts["errors"] += 1
             print(
                 f"  ERROR {_mask_name(patient_name)} corr={correlation_id}: "

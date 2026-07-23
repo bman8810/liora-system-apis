@@ -89,7 +89,9 @@ class GenieBottleClient:
         Args:
             task_slug: Slug of the task definition (e.g. 'zocdoc-new-booking').
             status: One of 'running', 'completed', 'failed', 'needs_review'.
-            correlation_id: Your own ID to correlate updates.
+            correlation_id: Your own ID to correlate updates. Whitespace is
+                stripped. Empty/whitespace-only values raise ValueError (omit
+                entirely for one-shot creates without upsert).
             trigger_type: e.g. 'cron', 'webhook', 'manual'.
             trigger_source: e.g. 'zocdoc', 'modmed'.
             patient: Patient info — include 'mrn' key to auto-link patient record.
@@ -106,6 +108,14 @@ class GenieBottleClient:
             duration_ms: Execution duration in milliseconds.
             metadata: Any extra key-value data.
         """
+        if correlation_id is not None:
+            correlation_id = str(correlation_id).strip()
+            if not correlation_id:
+                raise ValueError(
+                    "correlation_id is required for process upserts; omit creates a "
+                    "new orphan execution each call. Pass a stable id e.g. "
+                    "zocdoc-{appointmentId}."
+                )
         payload = {"task_slug": task_slug, "status": status}
         _optionals = {
             "correlation_id": correlation_id, "trigger_type": trigger_type,
@@ -193,7 +203,9 @@ class GenieBottleClient:
 
         Returns:
             List of execution dicts with id, correlation_id, status,
-            outcome_summary, error_message, created_at, patient, task_slug, task_name.
+            outcome_summary, error_message, created_at, patient, task_slug,
+            task_name, plus steps, appointment, metadata, and timestamps
+            (started_at, completed_at, updated_at) when the GB API provides them.
         """
         params = {}
         if task_slug is not None:
