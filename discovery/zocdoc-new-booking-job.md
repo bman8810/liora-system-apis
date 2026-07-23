@@ -50,13 +50,21 @@ gb.query_executions(task_slug="zocdoc-new-booking", correlation_id="zocdoc-app_�
 | Layer | Behavior |
 |-------|----------|
 | File lock | `~/.liora/locks/zocdoc-new-booking.lock` (fcntl); overlapping ticks exit `status=locked` |
-| GB completed | Skip patient entirely |
-| Step resume | If prior execution has call/portal/SMS `done`/`skipped`, do not re-send |
-| Weave search | SMS skipped if $100 template fingerprint already present |
+| Local StepLedger | `~/.liora/state/zocdoc-new-booking.json` (override `ZOCDOC_NEW_BOOKING_STATE_PATH`); keyed by `correlation_id`; survives GB omitting `steps` |
+| GB completed | Skip patient entirely (unless `--force`) |
+| Step resume | Merge GB prior steps + ledger; if call/portal/SMS `done`/`skipped`, do not re-send |
+| Booking timestamp | `patient.requestedToCallTimestamp` ⇒ treat call-request as already done |
+| Fee-gate checkpoint | After call-request success/skip, ledger + GB `running` are written **before** portal/SMS |
+| Weave search | SMS skipped if $100 template fingerprint already present (honored even with `--force`) |
 | Portal | Skipped if EMA `username` already set |
 
-Re-runs after **failed** mid-flight resume remaining steps only — no double
-call-request or double SMS when prior steps were recorded on GB.
+`--force` ignores only the GB **completed** gate. It still honors ledger,
+`step_done`, booking call-already, and Weave fingerprint — never double-charge
+or double-SMS.
+
+Re-runs after **failed** mid-flight resume remaining steps only. GB webhook
+`GET /api/webhooks/executions` currently omits `steps`; the local ledger is the
+durable job-side source of truth for step resume.
 
 ## PHI / secrets
 
