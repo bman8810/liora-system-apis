@@ -98,19 +98,19 @@ class WeaveClient:
             person_phone: Destination phone (normalized to E.164).
             body: Message body (do not put correlation_id here).
             person_id: Optional Weave person id.
-            related_ids: Optional list for Weave ``relatedIds`` (strings or
-                dicts). Defaults to [].
+            related_ids: Optional list for Weave ``relatedIds`` (entity id
+                strings). Defaults to [].
             correlation_id: Optional stable ops id. Appended to relatedIds as
-                ``{"type": "correlation_id", "id": ...}`` for handoff tracing
-                without putting the id in the patient-facing body.
+                a plain string (Weave expects id strings, not objects) for
+                handoff tracing without putting the id in the SMS body.
         """
         phone = normalize_phone_e164(person_phone)
 
         ids: list = list(related_ids) if related_ids else []
         if correlation_id:
             cid = str(correlation_id).strip()
-            if cid:
-                ids.append({"type": "correlation_id", "id": cid})
+            if cid and cid not in ids:
+                ids.append(cid)
 
         payload = {
             "locationId": self._cfg.location_id,

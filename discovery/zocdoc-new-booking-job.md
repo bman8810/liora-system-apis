@@ -78,15 +78,13 @@ status only** (no phone/body/email):
 
 ### SMS relatedIds / metadata path
 
-`WeaveClient.send_message(..., correlation_id=cid)` appends to Weave
-`relatedIds`:
+`WeaveClient.send_message(..., correlation_id=cid)` appends the corr as a
+**plain string** to Weave `relatedIds` (API expects entity id strings, not
+objects), e.g. `["zocdoc-app_…"]`. No correlation id in SMS body.
 
-```json
-{"type": "correlation_id", "id": "zocdoc-app_…"}
-```
-
-No correlation id in SMS body. On success, GB metadata may store Weave
-`smsId` / `threadId` / `personId` keys only (no phone).
+On success, GB metadata may store Weave `smsId` / `threadId` / `personId`
+keys only (no phone). Primary ops trace remains GB execution by
+`correlation_id`; relatedIds is best-effort SMS-side breadcrumb.
 
 ## Idempotency / retry
 
