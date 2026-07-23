@@ -15,6 +15,10 @@ venv/
 # Cookies / credentials
 cookies.txt
 *_cookies.json
+.secrets/
+
+# Twilio sink local artifacts (call JSON / recording pointers)
+cache/twilio-sink/
 
 # Debug images
 *.png
