@@ -74,9 +74,11 @@ class CallManager:
                 logger.error("SIP registration failed")
                 return
 
-            # Verify registration via API
+            # Verify registration via API (Barric profile from fetched creds)
             try:
-                reg_status = check_registration(session)
+                reg_status = check_registration(
+                    session, sip_profile_id=creds.get("sip_profile_id")
+                )
                 logger.info(f"Registration status: {reg_status}")
             except Exception as e:
                 logger.warning(f"Could not verify registration via API: {e}")

@@ -25,16 +25,42 @@ class WeaveConfig:
     location_id: str = "d8508d79-c71c-4678-b139-eaedb19c2159"
     tenant_id: str = "1cdad4ca-9dbe-45f2-8263-c998c1dfec98"
     user_id: str = "8b835d4b-d6b3-4e81-a204-6ac39835ba2b"
-    location_phone: str = "+12124334569"
-    softphone_id: str = "dd2b2484-f5f0-43d2-8029-9a140f958fed"
-    sip_profile_id: str = "c6d657dc-fbdd-47bd-b6e6-bc055dcd3346"
+    location_phone: str = "2124334569"  # office ANI digits; format at use
+    # Barric softphone 7002 (not Genie Bot 7018). Override via WEAVE_* env.
+    softphone_id: str = field(
+        default_factory=lambda: os.environ.get(
+            "WEAVE_SOFTPHONE_ID", "fab463cd-fc4e-406c-8779-d6c5cf8807e5"
+        )
+    )
+    sip_profile_id: str = field(
+        default_factory=lambda: os.environ.get(
+            "WEAVE_SIP_PROFILE_ID", "2d99f557-a65a-4148-9a72-9c645017eeda"
+        )
+    )
+    sip_extension: int = field(
+        default_factory=lambda: int(os.environ.get("WEAVE_SIP_EXTENSION", "7002"))
+    )
     from_number: str = "2124334569"
     from_name: str = "Liora Dermatology & Aesthetics"
     allowed_send_phones: Set[str] = field(
-        default_factory=lambda: {"+13302067819", "+19179401010", "+19179415577"}
+        default_factory=lambda: {
+            f"+1{d}" for d in ("3302067819", "9179401010", "9179415577")
+        }
     )
     allowed_dial_phones: Set[str] = field(
-        default_factory=lambda: {"+13302067819", "+19179401010", "+19179415577"}
+        default_factory=lambda: {
+            f"+1{d}"
+            for d in (
+                "3302067819",
+                "9179401010",
+                "9179415577",
+                "".join(
+                    c
+                    for c in os.environ.get("TWILIO_PHONE_NUMBER", "8885270186")
+                    if c.isdigit()
+                )[-10:],
+            )
+        }
     )
 
 

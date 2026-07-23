@@ -202,22 +202,85 @@ class WeaveClient:
             "locationIds": self._cfg.location_id,
         })
 
-    def fetch_sip_credentials(self) -> dict:
+    def fetch_sip_credentials(
+        self,
+        *,
+        extension: int | None = None,
+        sip_profile_id: str | None = None,
+        softphone_id: str | None = None,
+    ) -> dict:
         """Extract SIP credentials from softphone settings.
 
-        Returns dict with keys: username, password, domain, proxy, extension, sip_profile_id.
+        Prefers Barric ext 7002 / configured sip_profile_id over first list entry
+        (Genie 7018 was a historical hardcode).
+
+        Returns dict with keys: username, password, domain, proxy, extension,
+        sip_profile_id, softphone_id, softphone_name.
         """
         data = self.get_softphone_settings()
         proxy = data["proxy"]
-        softphone = data["softphones"][0]
-        sip_profile = softphone["sipProfiles"][0]
+        softphones = data.get("softphones") or []
+        if not softphones:
+            raise RuntimeError("No softphones returned by Weave softphones/settings")
+
+        want_ext = extension if extension is not None else getattr(
+            self._cfg, "sip_extension", 7002
+        )
+        want_profile = sip_profile_id or self._cfg.sip_profile_id
+        want_soft = softphone_id or self._cfg.softphone_id
+
+        chosen_sp = None
+        chosen_sip = None
+
+        for sp in softphones:
+            for sip in sp.get("sipProfiles") or []:
+                if sip.get("id") == want_profile:
+                    chosen_sp, chosen_sip = sp, sip
+                    break
+            if chosen_sip:
+                break
+
+        if not chosen_sip:
+            for sp in softphones:
+                if sp.get("id") == want_soft and (sp.get("sipProfiles") or []):
+                    chosen_sp, chosen_sip = sp, sp["sipProfiles"][0]
+                    break
+
+        if not chosen_sip:
+            for sp in softphones:
+                for sip in sp.get("sipProfiles") or []:
+                    if sip.get("extensionNumber") == want_ext:
+                        chosen_sp, chosen_sip = sp, sip
+                        break
+                if chosen_sip:
+                    break
+
+        if not chosen_sip:
+            for sp in softphones:
+                name = (sp.get("name") or "").lower()
+                if "barric" in name or "7002" in name:
+                    sips = sp.get("sipProfiles") or []
+                    if sips:
+                        chosen_sp, chosen_sip = sp, sips[0]
+                        break
+
+        if not chosen_sip:
+            chosen_sp = softphones[0]
+            sips = chosen_sp.get("sipProfiles") or []
+            if not sips:
+                raise RuntimeError("Selected softphone has no sipProfiles")
+            chosen_sip = sips[0]
+
+        assert chosen_sp is not None and chosen_sip is not None
         return {
-            "username": sip_profile["username"],
-            "password": sip_profile["password"],
-            "domain": sip_profile["domain"],
+            "username": chosen_sip["username"],
+            "password": chosen_sip["password"],
+            "domain": chosen_sip["domain"],
             "proxy": proxy,
-            "extension": sip_profile["extensionNumber"],
-            "sip_profile_id": sip_profile["id"],
+            "extension": chosen_sip["extensionNumber"],
+            "sip_profile_id": chosen_sip["id"],
+            "softphone_id": chosen_sp.get("id"),
+            "softphone_name": chosen_sp.get("name"),
         }
 
     def list_sip_profiles(self) -> dict:
@@ -254,5 +317,6 @@ class WeaveClient:
             "locationId": self._cfg.location_id,
         })
 
-    def check_registration(self) -> dict:
-        return self._get(f"/phone/sip-profiles/v1/{self._cfg.sip_profile_id}/registration")
+    def check_registration(self, sip_profile_id: str | None = None) -> dict:
+        pid = sip_profile_id or self._cfg.sip_profile_id
+        return self._get(f"/phone/sip-profiles/v1/{pid}/registration")

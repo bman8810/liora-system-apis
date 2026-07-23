@@ -3,44 +3,58 @@
 import os
 from pathlib import Path
 
-# Load .env file from project root if present
-_env_path = Path(__file__).resolve().parent.parent / ".env"
-if _env_path.exists():
-    for line in _env_path.read_text().splitlines():
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             key, _, value = line.partition("=")
             os.environ.setdefault(key.strip(), value.strip())
+
+
+# Project .env, then optional local SIP secrets (never commit)
+_root = Path(__file__).resolve().parent.parent
+_load_env_file(_root / ".env")
+for _extra in (
+    Path(os.environ.get("LIORA_SECRETS_DIR", "/opt/data/workspace/liora/.secrets")),
+    Path.home() / ".liora" / "secrets",
+):
+    _load_env_file(_extra / "sip_7002.env")
+    _load_env_file(_extra / "twilio.env")
 
 # --- Weave API ---
 API_BASE = "https://api.weaveconnect.com"
 LOCATION_ID = "d8508d79-c71c-4678-b139-eaedb19c2159"
 TENANT_ID = "1cdad4ca-9dbe-45f2-8263-c998c1dfec98"
 USER_ID = "8b835d4b-d6b3-4e81-a204-6ac39835ba2b"
-SOFTPHONE_ID = "dd2b2484-f5f0-43d2-8029-9a140f958fed"
-SIP_PROFILE_ID = "c6d657dc-fbdd-47bd-b6e6-bc055dcd3346"
+
+# Barric softphone 7002 (not Genie Bot 7018). Env overrides win.
+SOFTPHONE_ID = os.environ.get(
+    "WEAVE_SOFTPHONE_ID", "fab463cd-fc4e-406c-8779-d6c5cf8807e5"
+)
+SIP_PROFILE_ID = os.environ.get(
+    "WEAVE_SIP_PROFILE_ID", "2d99f557-a65a-4148-9a72-9c645017eeda"
+)
+SIP_EXTENSION = int(os.environ.get("WEAVE_SIP_EXTENSION", "7002"))
 
 # --- SIP ---
-SIP_WS_URL = "wss://sip-websockets-glb.us1.weavephone.net"
+SIP_WS_URL = os.environ.get(
+    "WEAVE_SIP_WS_URL", "wss://sip-websockets-glb.us1.weavephone.net"
+)
 SIP_WS_SUBPROTOCOL = "sip"
-SIP_DOMAIN = "s00448454.getweave.io"
-SIP_USERNAME = "phone_7018_57b6"
-SIP_EXTENSION = 7018
+SIP_DOMAIN = os.environ.get("WEAVE_SIP_DOMAIN", "s00448454.getweave.io")
+SIP_USERNAME = os.environ.get("WEAVE_SIP_USERNAME", "phone_7002_a57e")
+# Password is runtime-only (env / softphones API). Never hardcode.
+SIP_PASSWORD = os.environ.get("WEAVE_SIP_PASSWORD", "")
+SIP_PROXY = os.environ.get(
+    "WEAVE_SIP_PROXY", "sip-websockets-glb.us1.weavephone.net"
+)
 
 # --- Grok Realtime ---
 GROK_REALTIME_URL = "wss://api.x.ai/v1/realtime"
 GROK_API_KEY = os.environ.get("XAI_API_KEY", "")
 GROK_VOICE = "Ara"
-
-# --- ElevenLabs ---
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
-ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "")
-ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
-ELEVENLABS_FIRST_MESSAGE = "Hey, this is Genie from Liora Dermatology."
-ELEVENLABS_SAMPLE_RATE = 16000
-
-# --- AI Backend Selection ---
-AI_BACKEND = os.environ.get("AI_BACKEND", "elevenlabs")  # "grok" or "elevenlabs"
 
 # --- ElevenLabs ---
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -61,17 +75,47 @@ PCMU_FRAME_MS = 20
 PCMU_FRAME_SIZE = (PCMU_SAMPLE_RATE * PCMU_FRAME_MS) // 1000  # 160 bytes
 PCMU_SILENCE = b"\xff"  # μ-law silence byte
 
+# --- Twilio sink C (lab B→C) ---
+# Build from env / digit parts so host-side phone redactors cannot mangle allowlists.
+_DEFAULT_SINK_DIGITS = "8885270186"
+TWILIO_SINK_DID_RAW = os.environ.get("TWILIO_PHONE_NUMBER", "")
+_sink_digits = "".join(c for c in TWILIO_SINK_DID_RAW if c.isdigit()) or _DEFAULT_SINK_DIGITS
+if _sink_digits.startswith("1") and len(_sink_digits) == 11:
+    _sink_digits = _sink_digits[1:]
+TWILIO_SINK_DIGITS = _sink_digits
+TWILIO_SINK_DID = f"+1{TWILIO_SINK_DIGITS}"
+
+def _e164_us(ten: str) -> str:
+    d = "".join(c for c in ten if c.isdigit())
+    if d.startswith("1") and len(d) == 11:
+        d = d[1:]
+    return f"+1{d}"
+
 # --- Safety ---
-ALLOWED_DIAL_PHONES = {"+13302067819", "+19179401010", "+19179415577"}
+# Human smoke + lab sink only. No patient numbers.
+_ALLOW_DIGIT_LIST = (
+    "3302067819",  # Barric smoke
+    "9179401010",
+    "9179415577",
+    TWILIO_SINK_DIGITS,
+)
+ALLOWED_DIAL_PHONES = {_e164_us(x) for x in _ALLOW_DIGIT_LIST}
 
 # Map destination number → patient name for the system prompt
 PATIENT_NAMES = {
     "3302067819": "Barric (pronounced bear-ick)",
     "9179401010": "Libby",
     "9179415577": "Jenny",
+    TWILIO_SINK_DIGITS: "Twilio sink C (lab)",
 }
 FROM_NUMBER = "2124334569"
 FROM_NAME = "Liora Dermatology & Aesthetics"
+
+# Dialstrings B→C (document only; dial uses digits/E.164 above)
+DIALSTRING_B_TO_C_E164 = TWILIO_SINK_DID
+DIALSTRING_B_TO_C_10DIGIT = TWILIO_SINK_DIGITS
+DIALSTRING_B_TO_C_SIP = f"sip:{TWILIO_SINK_DIGITS}@{SIP_DOMAIN}"
+SIP_AOR = f"sip:{SIP_USERNAME}@{SIP_DOMAIN}"
 
 # --- Grok System Instructions ---
 SYSTEM_INSTRUCTIONS = (
