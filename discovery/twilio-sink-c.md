@@ -89,4 +89,20 @@ python -m twilio_sink.configure_number --probe --to +13302067819
 
 - Messaging on this DID is **not** product path (Barric). Voice only.  
 - Grok Realtime bridge on the stream is a follow-up; sink C smoke is webhook + stream + record.  
-- Sibling B→C E2E card owns Weave SIP dial into this DID once B/SIP ready.  
+- Sibling B→C E2E card owns Weave SIP dial into this DID once B/SIP ready.
+
+
+## Grok Voice (2026-07-23)
+
+| Env | |
+|-----|--|
+| `TWILIO_SINK_AI` | `grok` (or `none` for count-only) |
+| `TWILIO_SINK_TWIML_MODE` | `connect` (bidirectional) or `start_record` |
+| `XAI_API_KEY` | required for Grok Realtime |
+| `GROK_VOICE` | default `Ara` |
+
+Code: `twilio_sink/grok_bridge.py` + stream handler in `app.py`.  
+Proof: `/opt/data/workspace/liora/cache/twilio-sink/PROOF-grok-voice-2026-07-23.md`  
+xAI docs: https://docs.x.ai/developers/model-capabilities/audio/voice
+
+Known: barge-in lag — tune server_vad + cancel on speech_started.

@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     # Optional: validate X-Twilio-Signature (needs auth token, not only API key)
     twilio_validate_signature: bool = False
 
+    # AI on media stream: none | grok
+    twilio_sink_ai: str = "grok"
+    # Grok Realtime (XAI_API_KEY also read from env by grok_bridge)
+    xai_api_key: str = ""
+    grok_voice: str = "Ara"
+    # TwiML mode: connect = bidirectional <Connect><Stream>; start_record = Start+Record smoke
+    twilio_sink_twiml_mode: str = "connect"
+    # Max seconds to keep Connect stream open (Pause after Start mode)
+    twilio_sink_connect_seconds: int = 90
+
     def public_base(self) -> str:
         base = (self.twilio_sink_public_base or "").rstrip("/")
         return base

@@ -1,9 +1,12 @@
-"""FastAPI app: Twilio voice answer, media stream WS, recording callbacks."""
+"""FastAPI app: Twilio voice answer, media stream WS (+ optional Grok Realtime), recording callbacks."""
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import logging
+import os
 import time
 from typing import Any
 from xml.sax.saxutils import escape
@@ -17,7 +20,7 @@ from twilio_sink.config import settings
 logger = logging.getLogger("twilio_sink")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-app = FastAPI(title="Liora Twilio Sink C", version="0.1.0")
+app = FastAPI(title="Liora Twilio Sink C", version="0.2.0")
 
 
 def _require_admin(token: str | None) -> None:
@@ -31,7 +34,6 @@ def _require_admin(token: str | None) -> None:
 def _ws_url() -> str:
     base = settings.public_base()
     if not base:
-        # Relative won't work for Twilio Stream; return placeholder (still valid XML for local curl)
         return "wss://localhost/voice/stream"
     if base.startswith("https://"):
         return "wss://" + base[len("https://") :] + "/voice/stream"
@@ -48,11 +50,33 @@ def _http_url(path: str) -> str:
     return base.rstrip("/") + path
 
 
+def _ai_enabled() -> bool:
+    mode = (settings.twilio_sink_ai or "none").strip().lower()
+    return mode in ("grok", "g", "1", "true", "yes")
+
+
 def answer_twiml(call_sid: str = "") -> str:
-    """TwiML: start media stream (both tracks), greet, record once, hang up."""
+    """TwiML for sink C.
+
+    - connect (default with Grok): bidirectional Media Stream until hangup
+    - start_record: Start stream + Polly greet + Record (smoke without AI)
+    """
     stream_url = escape(_ws_url())
+    mode = (settings.twilio_sink_twiml_mode or "connect").strip().lower()
+    if mode in ("connect", "grok", "bidirectional") or (_ai_enabled() and mode != "start_record"):
+        # Bidirectional stream — Grok speaks back on the same WebSocket.
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="{stream_url}">
+      <Parameter name="sink" value="liora-c" />
+      <Parameter name="callSid" value="{escape(call_sid or "")}" />
+      <Parameter name="ai" value="grok" />
+    </Stream>
+  </Connect>
+</Response>
+"""
     rec_cb = escape(_http_url("/voice/recording"))
-    # IMPORTANT: Record without action re-requests the current document URL → answer loop.
     after_record = escape(_http_url("/voice/after-record"))
     rec_max = max(10, int(settings.twilio_sink_record_max_seconds))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -106,25 +130,35 @@ async def voice_after_record(request: Request) -> Response:
 @app.on_event("startup")
 async def _startup() -> None:
     settings.ensure_artifact_dir()
+    key_set = bool(settings.xai_api_key or os.environ.get("XAI_API_KEY"))
     logger.info(
-        "twilio_sink starting port=%s public_base=%s artifacts=%s rest_auth=%s",
+        "twilio_sink starting port=%s public_base=%s artifacts=%s rest_auth=%s ai=%s twiml=%s xai_key=%s",
         settings.twilio_sink_port,
         settings.public_base() or "(unset)",
         settings.twilio_sink_artifact_dir,
         settings.has_rest_auth(),
+        settings.twilio_sink_ai,
+        settings.twilio_sink_twiml_mode,
+        "yes" if key_set else "no",
     )
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
+    key_set = bool(settings.xai_api_key or os.environ.get("XAI_API_KEY"))
     return {
         "status": "ok",
         "service": "twilio-sink-c",
+        "version": "0.2.0",
         "public_base": settings.public_base() or None,
         "stream_url": _ws_url() if settings.public_base() else None,
         "artifact_dir": settings.twilio_sink_artifact_dir,
         "rest_auth_configured": settings.has_rest_auth(),
         "phone": settings.twilio_phone_number or None,
+        "ai": settings.twilio_sink_ai,
+        "twiml_mode": settings.twilio_sink_twiml_mode,
+        "xai_key_configured": key_set,
+        "grok_voice": settings.grok_voice,
     }
 
 
@@ -144,6 +178,8 @@ async def voice_answer(request: Request) -> Response:
         direction=direction,
         answered_at=time.time(),
         webhook_path="/voice/answer",
+        ai=settings.twilio_sink_ai,
+        twiml_mode=settings.twilio_sink_twiml_mode,
     )
     logger.info("answer CallSid=%s From=%s To=%s Direction=%s", call_sid, from_n, to_n, direction)
     xml = answer_twiml(call_sid=call_sid)
@@ -180,7 +216,6 @@ async def voice_recording(request: Request) -> PlainTextResponse:
     rec_url = str(data.get("RecordingUrl") or "")
     rec_status = str(data.get("RecordingStatus") or "")
     rec_duration = str(data.get("RecordingDuration") or "")
-    # Persist metadata only; media stays at Twilio until explicitly downloaded.
     store.mark_recording(
         call_sid,
         recording_sid=rec_sid,
@@ -189,7 +224,6 @@ async def voice_recording(request: Request) -> PlainTextResponse:
         recording_duration=rec_duration,
         recording_channels=str(data.get("RecordingChannels") or ""),
     )
-    # Also write a pointer file under recordings/
     if rec_sid:
         root = settings.ensure_artifact_dir() / "recordings"
         pointer = {
@@ -218,7 +252,37 @@ async def voice_stream(ws: WebSocket) -> None:
     stream_sid = ""
     media_frames = 0
     inbound_bytes = 0
+    outbound_payloads = 0
     started_at = time.time()
+    grok = None
+    transcripts: list[dict[str, str]] = []
+    grok_task_ready = asyncio.Event()
+
+    async def _send_mulaw_to_twilio(mulaw: bytes) -> None:
+        nonlocal outbound_payloads
+        if not stream_sid or not mulaw:
+            return
+        # Twilio Media Streams expect base64 μ-law chunks
+        try:
+            await ws.send_text(
+                json.dumps(
+                    {
+                        "event": "media",
+                        "streamSid": stream_sid,
+                        "media": {"payload": base64.b64encode(mulaw).decode("ascii")},
+                    }
+                )
+            )
+            outbound_payloads += 1
+        except Exception as e:
+            logger.warning("Twilio media send failed: %s", e)
+
+    async def _on_transcript(text: str, role: str) -> None:
+        if not text:
+            return
+        transcripts.append({"role": role, "text": text, "at": str(time.time())})
+        store.append_stream_meta(call_sid or "unknown", transcript={"role": role, "text": text[:500]})
+
     try:
         while True:
             message = await ws.receive_text()
@@ -242,21 +306,46 @@ async def voice_stream(ws: WebSocket) -> None:
                     tracks=tracks,
                     media_format=media_format,
                     custom_parameters=start.get("customParameters") or {},
+                    ai=settings.twilio_sink_ai if _ai_enabled() else "none",
                 )
                 logger.info(
-                    "stream start CallSid=%s StreamSid=%s tracks=%s",
+                    "stream start CallSid=%s StreamSid=%s tracks=%s ai=%s",
                     call_sid,
                     stream_sid,
                     tracks,
+                    settings.twilio_sink_ai if _ai_enabled() else "none",
                 )
+                if _ai_enabled():
+                    api_key = settings.xai_api_key or os.environ.get("XAI_API_KEY", "")
+                    if not api_key:
+                        logger.error("AI=grok but XAI_API_KEY unset — stream count-only")
+                    else:
+                        try:
+                            from twilio_sink.grok_bridge import GrokRealtimeBridge
+
+                            grok = GrokRealtimeBridge(
+                                api_key,
+                                voice=settings.grok_voice or "Ara",
+                                on_audio=_send_mulaw_to_twilio,
+                                on_transcript=_on_transcript,
+                            )
+                            await grok.connect_and_configure()
+                            grok_task_ready.set()
+                            store.append_stream_meta(
+                                call_sid,
+                                grok_session_ready=bool(grok.stats.get("session_ready")),
+                                grok_voice=settings.grok_voice,
+                            )
+                            logger.info("Grok bridge live for CallSid=%s", call_sid)
+                        except Exception as e:
+                            logger.exception("Failed to start Grok bridge: %s", e)
+                            store.append_stream_meta(call_sid, grok_error=str(e)[:300])
+                            grok = None
             elif event == "media":
                 media = payload.get("media") or {}
                 chunk = media.get("payload") or ""
-                # base64 mulaw payload size proxy
                 inbound_bytes += len(chunk)
                 media_frames += 1
-                # Echo first ~2s of outbound track is optional; for smoke we count only.
-                # Optionally mark mark events so Twilio timeline shows stream alive.
                 if media_frames == 1 and stream_sid:
                     try:
                         await ws.send_text(
@@ -270,41 +359,63 @@ async def voice_stream(ws: WebSocket) -> None:
                         )
                     except Exception:
                         pass
+                if grok and chunk:
+                    try:
+                        mulaw = base64.b64decode(chunk)
+                        await grok.send_mulaw(mulaw)
+                    except Exception as e:
+                        if media_frames < 5:
+                            logger.warning("forward to Grok failed: %s", e)
             elif event == "mark":
                 store.append_stream_meta(call_sid or "unknown", mark=payload.get("mark"))
             elif event == "stop":
                 duration = time.time() - started_at
+                grok_stats = grok.stats if grok else {}
                 store.append_stream_meta(
                     call_sid or "unknown",
                     stream_status="stopped",
                     stream_sid=stream_sid,
                     media_frames=media_frames,
                     media_payload_b64_chars=inbound_bytes,
+                    outbound_media_payloads=outbound_payloads,
                     stream_duration_sec=round(duration, 3),
+                    grok_stats=grok_stats,
+                    transcript_count=len(transcripts),
                 )
                 logger.info(
-                    "stream stop CallSid=%s frames=%s b64_chars=%s dur=%.2fs",
+                    "stream stop CallSid=%s frames=%s out=%s grok=%s dur=%.2fs",
                     call_sid,
                     media_frames,
-                    inbound_bytes,
+                    outbound_payloads,
+                    grok_stats,
                     duration,
                 )
                 break
     except WebSocketDisconnect:
         duration = time.time() - started_at
+        grok_stats = grok.stats if grok else {}
         store.append_stream_meta(
             call_sid or "unknown",
             stream_status="disconnect",
             stream_sid=stream_sid,
             media_frames=media_frames,
             media_payload_b64_chars=inbound_bytes,
+            outbound_media_payloads=outbound_payloads,
             stream_duration_sec=round(duration, 3),
+            grok_stats=grok_stats,
         )
         logger.info(
-            "stream disconnect CallSid=%s frames=%s",
+            "stream disconnect CallSid=%s frames=%s out=%s",
             call_sid,
             media_frames,
+            outbound_payloads,
         )
+    finally:
+        if grok:
+            try:
+                await grok.close()
+            except Exception:
+                pass
 
 
 @app.get("/voice/calls")
@@ -330,4 +441,4 @@ async def get_call(
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    return {"service": "twilio-sink-c", "health": "/health"}
+    return {"service": "twilio-sink-c", "health": "/health", "version": "0.2.0"}
