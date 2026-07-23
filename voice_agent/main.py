@@ -1,18 +1,21 @@
-"""Liora Voice Agent — entry point.
+"""Liora Voice Agent — entry point (voice product B).
 
 Usage:
-    python -m voice_agent --dial 3302067819          # uses WEAVE_TOKEN from .env
+    python -m voice_agent --verify-binding            # read-only config check
+    python -m voice_agent --dial-lab-sink             # dial Twilio sink C DID
+    python -m voice_agent --dial 3302067819           # WEAVE_TOKEN from .env
     python -m voice_agent --token <jwt> --dial 3302067819
-    python -m voice_agent                            # wait for incoming call
+    python -m voice_agent                             # wait for incoming call
 """
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 
 from . import config
-from .call_manager import CallManager
+from .auth import get_session, verify_voice_b_binding
 
 
 def setup_logging(verbose: bool = False):
@@ -28,7 +31,7 @@ def setup_logging(verbose: bool = False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Liora Voice Agent — SIP softphone + Grok realtime bridge"
+        description="Liora Voice Agent B — Barric SIP 7002 + Grok realtime bridge"
     )
     parser.add_argument(
         "--token",
@@ -37,6 +40,16 @@ def main():
     parser.add_argument(
         "--dial",
         help="Phone number to dial (digits only, e.g. 3302067819)"
+    )
+    parser.add_argument(
+        "--dial-lab-sink",
+        action="store_true",
+        help=f"Dial Twilio sink C ({config.TWILIO_SINK_DID}) for B→C lab",
+    )
+    parser.add_argument(
+        "--verify-binding",
+        action="store_true",
+        help="Read-only: confirm Barric 7002 + DID allowlist + outbound CLI (no call)",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -51,7 +64,26 @@ def main():
         print("ERROR: No token provided. Use --token <jwt> or set WEAVE_TOKEN in .env")
         sys.exit(1)
 
-    manager = CallManager(token=token, destination=args.dial or "")
+    if args.verify_binding:
+        session = get_session(token)
+        evidence = verify_voice_b_binding(session)
+        print(json.dumps(evidence, indent=2, default=str))
+        ok = (
+            evidence.get("sip_profile_is_barric_7002")
+            and evidence.get("sip_profile_is_not_genie")
+            and evidence.get("lab_sink_did", {}).get("in_allowlist")
+            and evidence.get("outbound_cli", {}).get("on_weave_accessible")
+        )
+        sys.exit(0 if ok else 2)
+
+    # Lazy import: call stack needs audioop/aiortc (broken on stock Python 3.13).
+    from .call_manager import CallManager
+
+    destination = args.dial or ""
+    if args.dial_lab_sink:
+        destination = config.TWILIO_SINK_DID
+
+    manager = CallManager(token=token, destination=destination)
 
     try:
         asyncio.run(manager.run())
