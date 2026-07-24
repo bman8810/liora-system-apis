@@ -159,6 +159,8 @@ def ema_find_slots(args):
 
 
 def ema_cancel_appointment(args):
+    from liora_tools.modmed.write_gate import require_ema_writes
+    require_ema_writes("cancel_appointment")
     client = get_client("ema")
     result = client.cancel_appointment(
         appointment_id=args.id, reason=args.reason, notes=args.notes or "",
@@ -173,6 +175,8 @@ def ema_cancel_appointment(args):
 
 
 def ema_reschedule(args):
+    from liora_tools.modmed.write_gate import require_ema_writes
+    require_ema_writes("reschedule")
     client = get_client("ema")
     result = client.reschedule(
         appointment_id=args.id, new_start=args.start,
@@ -195,6 +199,41 @@ def ema_list_appointment_types(args):
 def ema_list_cancel_reasons(args):
     client = get_client("ema")
     _output(client.list_cancel_reasons())
+
+
+def ema_validate_patient(args):
+    from liora_tools.modmed.scheduling_flow import SchedulingFlow
+    client = get_client("ema")
+    _output(SchedulingFlow(client).validate_patient(
+        last_name=args.last_name, first_name=args.first_name,
+        dob=args.dob, phone=args.phone, mrn=args.mrn,
+    ))
+
+
+def ema_upcoming(args):
+    from liora_tools.modmed.scheduling_flow import SchedulingFlow
+    client = get_client("ema")
+    _output(SchedulingFlow(client).list_upcoming_appointments(
+        args.patient_id, days_ahead=args.days_ahead,
+    ))
+
+
+def ema_schedule_lookup(args):
+    from liora_tools.modmed.scheduling_flow import SchedulingFlow
+    client = get_client("ema")
+    _output(SchedulingFlow(client).lookup(
+        last_name=args.last_name, first_name=args.first_name,
+        dob=args.dob, phone=args.phone, mrn=args.mrn,
+        days_ahead=args.days_ahead, appt_type_id=args.type_id,
+        duration=args.duration, time_of_day=args.time_of_day,
+        specific_date=args.date, slot_limit=args.slot_limit,
+    ))
+
+
+def ema_visit_types(args):
+    from liora_tools.modmed.scheduling_flow import SchedulingFlow
+    client = get_client("ema")
+    _output(SchedulingFlow(client).list_visit_types())
 
 
 # ── ZocDoc Commands ─────────────────────────────────────────────────────────
@@ -365,14 +404,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--duration", type=int, default=15, help="Duration in minutes")
     p.set_defaults(func=ema_find_slots)
 
-    p = e.add_parser("cancel-appointment", help="Cancel an appointment")
+    p = e.add_parser(
+        "cancel-appointment",
+        help="Cancel an appointment (blocked unless EMA_WRITES_ENABLED=true)",
+    )
     p.add_argument("--id", required=True, help="Appointment ID")
     p.add_argument("--reason", default="PATIENT_CANCELLED",
                    help="Cancel reason (default: PATIENT_CANCELLED)")
     p.add_argument("--notes", default="", help="Cancellation notes")
     p.set_defaults(func=ema_cancel_appointment)
 
-    p = e.add_parser("reschedule", help="Reschedule an appointment")
+    p = e.add_parser(
+        "reschedule",
+        help="Reschedule an appointment (blocked unless EMA_WRITES_ENABLED=true)",
+    )
     p.add_argument("--id", required=True, help="Appointment ID")
     p.add_argument("--start", required=True, help="New start time (ISO 8601 UTC)")
     p.add_argument("--duration", type=int, default=None, help="New duration in minutes")
@@ -383,6 +428,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = e.add_parser("list-cancel-reasons", help="List available cancel reasons")
     p.set_defaults(func=ema_list_cancel_reasons)
+
+    p = e.add_parser("validate-patient", help="Validate/lookup patient (read-only flow)")
+    p.add_argument("--last-name", default=None)
+    p.add_argument("--first-name", default=None)
+    p.add_argument("--dob", default=None, help="YYYY-MM-DD")
+    p.add_argument("--phone", default=None)
+    p.add_argument("--mrn", default=None)
+    p.set_defaults(func=ema_validate_patient)
+
+    p = e.add_parser("upcoming", help="List upcoming open appointments for a patient")
+    p.add_argument("--patient-id", required=True, help="EMA patient ID")
+    p.add_argument("--days-ahead", type=int, default=90)
+    p.set_defaults(func=ema_upcoming)
+
+    p = e.add_parser("schedule-lookup", help="Full read-only scheduling lookup flow")
+    p.add_argument("--last-name", default=None)
+    p.add_argument("--first-name", default=None)
+    p.add_argument("--dob", default=None, help="YYYY-MM-DD")
+    p.add_argument("--phone", default=None)
+    p.add_argument("--mrn", default=None)
+    p.add_argument("--days-ahead", type=int, default=90)
+    p.add_argument("--type-id", default=None, help="Appointment type ID for open slots")
+    p.add_argument("--duration", type=int, default=15)
+    p.add_argument("--time-of-day", default="ANYTIME")
+    p.add_argument("--date", default=None, help="Specific date YYYY-MM-DD")
+    p.add_argument("--slot-limit", type=int, default=5)
+    p.set_defaults(func=ema_schedule_lookup)
+
+    p = e.add_parser("visit-types", help="List simplified visit/appointment types")
+    p.set_defaults(func=ema_visit_types)
 
     # ── ZocDoc ──
 
