@@ -40,7 +40,8 @@ class WeaveConfig:
 
 @dataclass
 class EmaConfig:
-    base_url: str = "https://lioraderm.ema.md"
+    # Production host redirects to *.modmedapp.com; prefer that for API cookies.
+    base_url: str = "https://lioraderm.modmedapp.com"
     cookie_file: str = "ema_cookies.json"
     facility_id: str = "2040"
 

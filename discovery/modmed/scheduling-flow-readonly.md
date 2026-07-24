@@ -3,62 +3,70 @@
 Runbook for Genie agents: validate patient → list upcoming appointments → find open slots.
 **Writes are hard-gated** unless `EMA_WRITES_ENABLED=true`.
 
+## Live auth (Kernel Liora)
+
+1. Project `gxujms2i14jyrds9w3dhrdok`, profile **Liora**, Managed Auth domain `modmedapp.com` (AUTHENTICATED).
+2. Create short-TTL browser → `https://lioraderm.ema.md/ema/practice/staff/` (lands on `lioraderm.modmedapp.com`).
+3. Playwright `page.context().cookies()` (httpOnly JSESSIONID).
+4. Save EMA/SSO cookies only to `$LIORA_CREDENTIALS_DIR/ema_cookies.json`:
+
+```json
+{
+  "base_url": "https://lioraderm.modmedapp.com",
+  "cookies": [ {"name":"JSESSIONID","value":"…","domain":"lioraderm.modmedapp.com","path":"/"}, … ]
+}
+```
+
+5. Always `kernel browsers delete $SID`.
+
+Default API host is **`https://lioraderm.modmedapp.com`** (not bare `.ema.md`).
+
 ## Flow steps
 
-1. **Validate patient** — search by last/first name, DOB, phone (client-side digits filter), MRN.
-   Statuses: `matched` | `none` | `ambiguous` | `inactive`.
-2. **Upcoming appointments** — for a matched patient ID, open statuses only
-   (`PENDING`, `CONFIRMED`, `SCHEDULED`, `ARRIVED`, `CHECKED_IN`, `CHANGED`, `PRESENT`).
-3. **Open slots** — optional `appt_type_id`; flattens EMA finder groups into a simple slot list.
-4. **Combined lookup** — runs 1→2→3 and returns `next_actions` hints for the agent
-   (`confirm_existing`, `offer_slots`, `handoff_ambiguous`, …).
+1. **Validate patient** — name / DOB / phone / MRN. Statuses: `matched` | `none` | `ambiguous` | `inactive`.
+   Missing `patientStatus` is treated as schedulable (EMA often omits it).
+2. **Upcoming appointments** — open statuses only.
+3. **Open slots** — optional `appt_type_id`.
+4. **Combined lookup** — `next_actions` for the agent.
 
-## HTTP endpoints
+## HTTP
 
-App prefix: `/api/v1/ema` (API key required). Scheduling router: `/scheduling`.
+| Method | Path |
+|--------|------|
+| GET | `/api/v1/ema/scheduling/flow/validate` |
+| GET | `/api/v1/ema/scheduling/flow/patients/{patient_id}/upcoming` |
+| GET | `/api/v1/ema/scheduling/flow/lookup` |
+| GET | `/api/v1/ema/scheduling/flow/visit-types` |
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/v1/ema/scheduling/flow/validate` | Patient match classification |
-| GET | `/api/v1/ema/scheduling/flow/patients/{patient_id}/upcoming` | Upcoming open appts |
-| GET | `/api/v1/ema/scheduling/flow/lookup` | Full read-only flow |
-| GET | `/api/v1/ema/scheduling/flow/visit-types` | Simplified visit types |
-
-Existing write routes (`POST .../scheduling/reschedule/{id}`, `POST .../scheduling/cancel/{id}`)
-remain but raise **403** `ema_writes_disabled` when the gate is off.
+Writes (`reschedule`/`cancel`/create/portal) → **403** `ema_writes_disabled` when gated.
 
 ## CLI
 
 ```bash
+export LIORA_CREDENTIALS_DIR=~/.liora/credentials
 python -m liora_tools ema validate-patient --last-name Doe --dob 1980-01-01
-python -m liora_tools ema upcoming --patient-id 12345 --days-ahead 90
-python -m liora_tools ema schedule-lookup --last-name Doe --type-id 99
+python -m liora_tools ema upcoming --patient-id 12345
+python -m liora_tools ema schedule-lookup --last-name Doe --type-id 6188
 python -m liora_tools ema visit-types
 ```
 
-Cancel/reschedule CLI commands also call the write gate before contacting EMA.
+## Voice agent (Grok tools)
+
+| Env | Default |
+|-----|---------|
+| `EMA_VOICE_TOOLS` | `1` (set `0` to disable tools / use scripted prompt) |
+| `AI_BACKEND` | `grok` |
+| `GROK_VOICE_MODEL` | `grok-voice-latest` |
+| `EMA_WRITES_ENABLED` | off |
+
+Tools registered on `session.update`: `lookup_patient`, `list_upcoming_appointments`, `list_visit_types`, `find_open_slots`, `schedule_lookup`.  
+Handler: `voice_agent/ema_tools.py` → `SchedulingFlow`. Function events: `response.function_call_arguments.done` → `function_call_output` → debounced `response.create`.
 
 ## Write gate
 
-| Env | Effect |
-|-----|--------|
-| unset / `false` | All EMA mutations blocked (`WriteGatedError`) |
-| `EMA_WRITES_ENABLED=true` (or `1`/`yes`/`on`) | Mutations allowed |
+Unset / false blocks: portal email, create, update, reschedule, cancel.
 
-Gated actions: `send_portal_email`, `create_appointment`, `update_appointment`,
-`reschedule`, `cancel_appointment`.
+## Next
 
-Python:
-
-```python
-from liora_tools.modmed import SchedulingFlow, EmaClient
-from liora_tools.modmed.write_gate import ema_writes_enabled, require_ema_writes
-
-flow = SchedulingFlow(client)
-result = flow.lookup(last_name="Doe", dob="1980-01-01", appt_type_id=99)
-```
-
-## Next phase
-
-- Wire voice-agent tools to these read-only flow endpoints.
-- Enable writes only after explicit product approval and monitoring.
+- Live phone smoke with tools mid-call
+- Unlock writes only with explicit product OK
