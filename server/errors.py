@@ -7,6 +7,7 @@ from liora_tools.exceptions import (
     OptimisticLockError,
     RateLimitError,
     SafetyGuardError,
+    WriteGatedError,
 )
 
 
@@ -42,6 +43,13 @@ async def safety_guard_handler(request: Request, exc: SafetyGuardError):
     )
 
 
+async def write_gated_handler(request: Request, exc: WriteGatedError):
+    return JSONResponse(
+        status_code=403,
+        content={"error": "ema_writes_disabled", "detail": str(exc)},
+    )
+
+
 async def liora_api_error_handler(request: Request, exc: LioraAPIError):
     return JSONResponse(
         status_code=502,
@@ -58,4 +66,5 @@ def register_error_handlers(app):
     app.add_exception_handler(RateLimitError, rate_limit_handler)
     app.add_exception_handler(OptimisticLockError, optimistic_lock_handler)
     app.add_exception_handler(SafetyGuardError, safety_guard_handler)
+    app.add_exception_handler(WriteGatedError, write_gated_handler)
     app.add_exception_handler(LioraAPIError, liora_api_error_handler)
