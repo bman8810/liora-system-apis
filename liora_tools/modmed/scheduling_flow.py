@@ -128,7 +128,14 @@ class SchedulingFlow:
                 "message": "No patients matched the given criteria.",
             }
 
-        active = [p for p in results if (p.get("patientStatus") or "").upper() == "ACTIVE"]
+        # EMA often omits patientStatus on list/get; treat missing/empty as schedulable.
+        def _is_active(p: dict) -> bool:
+            st = (p.get("patientStatus") or "").strip().upper()
+            if not st:
+                return True
+            return st == "ACTIVE"
+
+        active = [p for p in results if _is_active(p)]
         if len(active) == 1:
             return {
                 "status": "matched",
