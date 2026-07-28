@@ -48,6 +48,33 @@ def save_credentials(platform: str, data: dict) -> None:
 # ── Platform-specific client factories ──
 
 
+def _try_kernel_sync(platform: str) -> bool:
+    """Best-effort Kernel Liora Managed Auth → local credentials. Returns True if saved."""
+    try:
+        from liora_tools.auth import kernel_bridge
+    except Exception:
+        return False
+    try:
+        result = kernel_bridge.sync_platform(platform, require_authenticated=True)
+        return result.get("status") == "saved"
+    except Exception:
+        return False
+
+
+def _ema_config_from_creds(creds: dict | None):
+    import os
+    from liora_tools.config import EmaConfig
+
+    config = EmaConfig()
+    base = None
+    if isinstance(creds, dict):
+        base = creds.get("base_url")
+    base = os.environ.get("EMA_BASE_URL") or base
+    if base:
+        config.base_url = base.rstrip("/")
+    return config
+
+
 def get_weave_client():
     """Get a validated WeaveClient. Raises AuthenticationError if token is missing/expired."""
     from liora_tools.auth.weave import get_session
@@ -55,51 +82,59 @@ def get_weave_client():
     from liora_tools.weave.client import WeaveClient
 
     config = WeaveConfig()
-    creds = load_credentials("weave")
-    if not creds or "token" not in creds:
-        raise AuthenticationError(
-            "No Weave token found. Run: python -m liora_tools auth refresh weave\n"
-            "Or from Windows Chrome: python -m liora_tools auth save-chrome weave"
-        )
 
-    session = get_session(creds["token"], config)
-    client = WeaveClient(session, config)
-
-    # Validate with a lightweight call
-    try:
+    def _build(token: str):
+        session = get_session(token, config)
+        client = WeaveClient(session, config)
         client.list_threads(page_size=1)
-    except AuthenticationError:
-        raise AuthenticationError(
-            "Weave token expired. Run: python -m liora_tools auth refresh weave\n"
-            "Or from Windows Chrome: python -m liora_tools auth save-chrome weave"
-        )
-    return client
+        return client
+
+    creds = load_credentials("weave")
+    if creds and "token" in creds:
+        try:
+            return _build(creds["token"])
+        except AuthenticationError:
+            pass
+
+    # Tier: Kernel Liora Managed Auth bridge
+    if _try_kernel_sync("weave"):
+        creds = load_credentials("weave")
+        if creds and "token" in creds:
+            try:
+                return _build(creds["token"])
+            except AuthenticationError:
+                pass
+
+    raise AuthenticationError(
+        "No valid Weave token. Run: python -m liora_tools auth kernel-sync weave\n"
+        "Or: python -m liora_tools auth refresh weave\n"
+        "Or from Windows Chrome: python -m liora_tools auth save-chrome weave"
+    )
 
 
 def get_ema_client():
-    """Get a validated EmaClient with SSO auto-refresh."""
+    """Get a validated EmaClient with SSO auto-refresh + Kernel bridge fallback."""
     from liora_tools.auth import ema as ema_auth
-    from liora_tools.config import EmaConfig
     from liora_tools.modmed.client import EmaClient
 
-    config = EmaConfig()
+    def _client_ok(cookies, config) -> "EmaClient | None":
+        client = EmaClient.from_cookies(cookies, config)
+        if client.check_session():
+            return client
+        return None
+
     creds = load_credentials("ema")
+    config = _ema_config_from_creds(creds if isinstance(creds, dict) else None)
 
     # Support both new format {"cookies": [...], "base_url": ...} and legacy flat array
     cookies = None
     if creds:
-        if isinstance(creds, dict):
-            cookies = creds.get("cookies")
-            if creds.get("base_url"):
-                config = EmaConfig(base_url=creds["base_url"], cookie_file=config.cookie_file,
-                                   facility_id=config.facility_id)
-        else:
-            cookies = creds
+        cookies = creds.get("cookies") if isinstance(creds, dict) else creds
 
     if cookies:
-        client = EmaClient.from_cookies(cookies, config)
-        if client.check_session():
-            return client
+        ok = _client_ok(cookies, config)
+        if ok:
+            return ok
 
         # Tier 2a: HTTP-based SSO refresh — works on WSL2, no Playwright needed
         try:
@@ -108,10 +143,11 @@ def get_ema_client():
                 save_credentials("ema", {
                     "cookies": new_cookies,
                     "last_verified": datetime.now(timezone.utc).isoformat(),
+                    "base_url": getattr(config, "base_url", None),
                 })
-                client = EmaClient.from_cookies(new_cookies, config)
-                if client.check_session():
-                    return client
+                ok = _client_ok(new_cookies, config)
+                if ok:
+                    return ok
         except Exception:
             pass
 
@@ -122,15 +158,27 @@ def get_ema_client():
                 save_credentials("ema", {
                     "cookies": new_cookies,
                     "last_verified": datetime.now(timezone.utc).isoformat(),
+                    "base_url": getattr(config, "base_url", None),
                 })
-                client = EmaClient.from_cookies(new_cookies, config)
-                if client.check_session():
-                    return client
+                ok = _client_ok(new_cookies, config)
+                if ok:
+                    return ok
         except Exception:
             pass
 
+    # Tier 3: Kernel Liora Managed Auth bridge
+    if _try_kernel_sync("ema"):
+        creds = load_credentials("ema")
+        config = _ema_config_from_creds(creds if isinstance(creds, dict) else None)
+        cookies = creds.get("cookies") if isinstance(creds, dict) else None
+        if cookies:
+            ok = _client_ok(cookies, config)
+            if ok:
+                return ok
+
     raise AuthenticationError(
-        "EMA session expired. Run: python -m liora_tools auth refresh ema\n"
+        "EMA session expired. Run: python -m liora_tools auth kernel-sync ema\n"
+        "Or: python -m liora_tools auth refresh ema\n"
         "Or from Windows Chrome: python -m liora_tools auth save-chrome ema"
     )
 
@@ -140,12 +188,20 @@ def get_zocdoc_client():
 
     Strategy:
       1. Try cookie-based transport (works on WSL2 without Playwright)
-      2. Fall back to browser transport (requires Playwright + Chrome)
+      2. Kernel Liora Managed Auth → cookies
+      3. Fall back to browser transport (requires Playwright + Chrome)
     """
     from liora_tools.config import ZocdocConfig
     from liora_tools.zocdoc.client import ZocdocClient
 
     config = ZocdocConfig()
+
+    def _try_cookies(cookies):
+        from liora_tools.zocdoc.requests_transport import RequestsTransport
+        transport = RequestsTransport(cookies, config)
+        client = ZocdocClient(transport, config)
+        client.get_status_counts()
+        return client
 
     # Try cookie-based transport first (works without Playwright / on WSL2)
     creds = load_credentials("zocdoc")
@@ -153,13 +209,19 @@ def get_zocdoc_client():
         cookies = creds.get("cookies") if isinstance(creds, dict) else creds
         if cookies:
             try:
-                from liora_tools.zocdoc.requests_transport import RequestsTransport
-                transport = RequestsTransport(cookies, config)
-                client = ZocdocClient(transport, config)
-                client.get_status_counts()
-                return client
+                return _try_cookies(cookies)
             except Exception:
-                pass  # cookies expired or DataDome blocked — try browser
+                pass  # cookies expired or DataDome blocked
+
+    # Kernel Liora Managed Auth bridge
+    if _try_kernel_sync("zocdoc"):
+        creds = load_credentials("zocdoc")
+        cookies = creds.get("cookies") if isinstance(creds, dict) else None
+        if cookies:
+            try:
+                return _try_cookies(cookies)
+            except Exception:
+                pass
 
     # Fall back to browser transport (requires Playwright)
     try:
@@ -169,11 +231,12 @@ def get_zocdoc_client():
     except ImportError:
         raise AuthenticationError(
             "ZocDoc session expired and Playwright not available. "
-            "Run on Windows: python -m liora_tools auth save-chrome zocdoc"
+            "Run: python -m liora_tools auth kernel-sync zocdoc"
         )
     except Exception:
         raise AuthenticationError(
-            "ZocDoc session expired. Run: python -m liora_tools auth refresh zocdoc\n"
+            "ZocDoc session expired. Run: python -m liora_tools auth kernel-sync zocdoc\n"
+            "Or: python -m liora_tools auth refresh zocdoc\n"
             "Or from Windows Chrome: python -m liora_tools auth save-chrome zocdoc"
         )
 
@@ -223,29 +286,42 @@ def check_all() -> dict:
 
 
 def refresh_platform(platform: str) -> dict:
-    """Refresh credentials for a platform via browser login.
+    """Refresh credentials for a platform.
 
-    Requires playwright (install with: pip install liora-tools[auth]).
+    Prefer Kernel Liora Managed Auth when available; fall back to local
+    Playwright browser login (pip install liora-tools[auth]).
     """
     now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Prefer Kernel bridge (no local passwords; Managed Auth on project Liora)
+    try:
+        from liora_tools.auth import kernel_bridge
+        result = kernel_bridge.sync_platform(platform, require_authenticated=True)
+        if result.get("status") == "saved":
+            result = dict(result)
+            result["status"] = "refreshed"
+            result["via"] = "kernel_liora"
+            return result
+    except Exception:
+        pass
 
     if platform == "weave":
         from liora_tools.auth.weave import login_browser
         token = login_browser()
         save_credentials("weave", {"token": token, "refreshed_at": now_iso})
-        return {"status": "refreshed", "platform": "weave"}
+        return {"status": "refreshed", "platform": "weave", "via": "playwright"}
 
     elif platform == "ema":
         from liora_tools.auth.ema import login_browser
         cookies = login_browser()
         save_credentials("ema", {"cookies": cookies, "last_verified": now_iso})
-        return {"status": "refreshed", "platform": "ema"}
+        return {"status": "refreshed", "platform": "ema", "via": "playwright"}
 
     elif platform == "zocdoc":
         from liora_tools.auth.zocdoc import login_browser
         cookies = login_browser()
         save_credentials("zocdoc", {"cookies": cookies, "last_verified": now_iso})
-        return {"status": "refreshed", "platform": "zocdoc"}
+        return {"status": "refreshed", "platform": "zocdoc", "via": "playwright"}
 
     else:
         raise ValueError(f"Unknown platform: {platform}. Expected: weave, ema, zocdoc")

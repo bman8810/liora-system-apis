@@ -20,7 +20,7 @@ import requests
 
 from liora_tools.auth.session_manager import check_all, get_client, refresh_platform
 from liora_tools.auth.chrome_extract import save_from_chrome
-from liora_tools.exceptions import LioraAPIError
+from liora_tools.exceptions import AuthenticationError, LioraAPIError
 
 PORTAL_URL = os.environ.get("PORTAL_URL", "")
 
@@ -302,12 +302,43 @@ def auth_save_chrome(args):
     _output(save_from_chrome(args.target, data))
 
 
+def auth_kernel_status(args):
+    from liora_tools.auth import kernel_bridge
+    _output(kernel_bridge.kernel_available())
+
+
+def auth_kernel_sync(args):
+    from liora_tools.auth import kernel_bridge
+    platforms = None
+    if args.target and args.target != "all":
+        platforms = [args.target]
+    try:
+        if platforms and len(platforms) == 1:
+            _output(kernel_bridge.sync_platform(
+                platforms[0],
+                require_authenticated=not args.force,
+            ))
+        else:
+            _output(kernel_bridge.sync_all(
+                platforms,
+                require_authenticated=not args.force,
+            ))
+    except AuthenticationError as e:
+        _error(str(e))
+
+
 # ── Run Commands ───────────────────────────────────────────────────────────
 
 
 def run_zocdoc_new_booking(args):
     from liora_tools.scripts.zocdoc_new_booking import main
-    main(dry_run=args.dry_run, lookback_minutes=args.lookback_minutes)
+    main(
+        dry_run=args.dry_run,
+        lookback_minutes=args.lookback_minutes,
+        max_patients=getattr(args, "max_patients", None),
+        force=getattr(args, "force", False),
+        skip_lock=getattr(args, "skip_lock", False),
+    )
 
 
 # ── CLI Builder ─────────────────────────────────────────────────────────────
@@ -508,6 +539,30 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Platform to save credentials for")
     p.set_defaults(func=auth_save_chrome)
 
+    p = a.add_parser(
+        "kernel-status",
+        help="Show Kernel Liora Managed Auth readiness (no browser session)",
+    )
+    p.set_defaults(func=auth_kernel_status)
+
+    p = a.add_parser(
+        "kernel-sync",
+        help="Pull cookies/JWT from Kernel Liora profile into local credential store",
+    )
+    p.add_argument(
+        "target",
+        nargs="?",
+        default="all",
+        choices=["all", "weave", "ema", "zocdoc"],
+        help="Platform to sync (default: all AUTHENTICATED connections)",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Attempt extract even if Managed Auth status is not AUTHENTICATED",
+    )
+    p.set_defaults(func=auth_kernel_sync)
+
     # ── Run (standalone scripts) ──
 
     run = subs.add_parser("run", help="Run standalone automation scripts")
@@ -516,9 +571,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = r.add_parser("zocdoc-new-booking",
                      help="Process new patient bookings from ZocDoc")
     p.add_argument("--dry-run", action="store_true",
-                   help="Log what would happen without taking action")
+                   help="Discover + plan only; no call-request/SMS/portal/GB mutate")
     p.add_argument("--lookback-minutes", type=int, default=90,
                    help="How far back to scan for bookings (default: 90)")
+    p.add_argument("--max-patients", type=int, default=None,
+                   help="Cap candidates processed this run")
+    p.add_argument("--force", action="store_true",
+                   help="Ignore completed GB gate (still step-skips when possible)")
+    p.add_argument("--skip-lock", action="store_true",
+                   help="Do not take exclusive file lock")
     p.set_defaults(func=run_zocdoc_new_booking)
 
     return parser

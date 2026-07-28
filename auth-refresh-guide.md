@@ -1,5 +1,10 @@
 # Auth Refresh Guide — Chrome-Based Credential Extraction
 
+> **Hermes / Liora preferred path:** Kernel Managed Auth bridge — see
+> [`discovery/kernel-auth-bridge.md`](./discovery/kernel-auth-bridge.md).
+> CLI: `python -m liora_tools auth kernel-sync all`.
+> This document remains the **Windows Chrome / Claude-for-Chrome** path.
+
 ## Overview
 
 Authentication for Modmed, Weave, and Zocdoc requires a real Chrome browser

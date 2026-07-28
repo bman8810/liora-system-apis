@@ -17,15 +17,16 @@ For each new Zocdoc patient:
 **Important:** Always pass a `correlation_id` on both the "running" and "completed" calls so the second call **updates** the existing execution rather than creating a new one.
 
 ```python
-correlation_id = f"zocdoc-{mrn}-{appt_date}"
+# Prefer appointmentId (unique per booking). Fallback: zocdoc-{mrn}-{appt_date}
+correlation_id = f"zocdoc-{appointment_id}"
 
 gb.report_process("zocdoc-new-booking", "running",
     correlation_id=correlation_id,
     trigger_type="manual", trigger_source="zocdoc",
-    patient={"mrn": mrn, "name": name},
+    patient={"mrn": mrn, "name": name},  # avoid full phone/email in GB
     steps=[{"step": 1, "action": "Pulled appointment from ZocDoc", "status": "done"}])
 
-# ... call request + portal + SMS ...
+# ... call request → portal → SMS (order matters) ...
 
 gb.report_process("zocdoc-new-booking", "completed",
     correlation_id=correlation_id,  # same ID = update
@@ -38,6 +39,9 @@ gb.report_process("zocdoc-new-booking", "completed",
         {"step": 4, "action": "Sent Genie SMS via Weave", "status": "done"},
     ])
 ```
+
+**Production job:** `python -m liora_tools run zocdoc-new-booking [--dry-run]`.
+Details, lock, idempotency, PHI rules: [zocdoc-new-booking-job.md](./zocdoc-new-booking-job.md).
 
 ### Genie SMS Template
 
