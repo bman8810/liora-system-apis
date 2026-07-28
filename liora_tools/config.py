@@ -40,7 +40,7 @@ class WeaveConfig:
 
 @dataclass
 class EmaConfig:
-    # Kernel Managed Auth for Liora uses modmedapp.com; legacy host was ema.md.
+    # Kernel Managed Auth / production cookies use modmedapp.com (legacy: ema.md).
     # Override with EMA_BASE_URL or credential file base_url from kernel_bridge.
     base_url: str = field(
         default_factory=lambda: os.environ.get(

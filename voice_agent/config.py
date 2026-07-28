@@ -28,9 +28,13 @@ SIP_USERNAME = "phone_7018_57b6"
 SIP_EXTENSION = 7018
 
 # --- Grok Realtime ---
-GROK_REALTIME_URL = "wss://api.x.ai/v1/realtime"
+# model pinned via ?model= (see grok_bridge._realtime_url)
+GROK_REALTIME_URL = os.environ.get(
+    "GROK_REALTIME_URL", "wss://api.x.ai/v1/realtime"
+)
+GROK_VOICE_MODEL = os.environ.get("GROK_VOICE_MODEL", "grok-voice-latest")
 GROK_API_KEY = os.environ.get("XAI_API_KEY", "")
-GROK_VOICE = "Ara"
+GROK_VOICE = os.environ.get("GROK_VOICE", "Ara")
 
 # --- ElevenLabs ---
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -40,17 +44,7 @@ ELEVENLABS_FIRST_MESSAGE = "Hey, this is Genie from Liora Dermatology."
 ELEVENLABS_SAMPLE_RATE = 16000
 
 # --- AI Backend Selection ---
-AI_BACKEND = os.environ.get("AI_BACKEND", "elevenlabs")  # "grok" or "elevenlabs"
-
-# --- ElevenLabs ---
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
-ELEVENLABS_AGENT_ID = os.environ.get("ELEVENLABS_AGENT_ID", "")
-ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
-ELEVENLABS_FIRST_MESSAGE = "Hey, this is Genie from Liora Dermatology."
-ELEVENLABS_SAMPLE_RATE = 16000
-
-# --- AI Backend Selection ---
-AI_BACKEND = os.environ.get("AI_BACKEND", "elevenlabs")  # "grok" or "elevenlabs"
+AI_BACKEND = os.environ.get("AI_BACKEND", "grok")  # "grok" or "elevenlabs"
 
 # --- Weave Token (from .env or CLI) ---
 WEAVE_TOKEN = os.environ.get("WEAVE_TOKEN", "")
@@ -73,7 +67,7 @@ PATIENT_NAMES = {
 FROM_NUMBER = "2124334569"
 FROM_NAME = "Liora Dermatology & Aesthetics"
 
-# --- Grok System Instructions ---
+# --- Grok System Instructions (legacy scripted outbound reschedule) ---
 SYSTEM_INSTRUCTIONS = (
     "You are Genie, the receptionist at Liora Dermatology & Aesthetics in New York City. "
     "You are a real person — never say you are an AI, a bot, or a virtual assistant. "
@@ -113,3 +107,31 @@ SYSTEM_INSTRUCTIONS = (
     "- Doctor's name: Dr. Rhee.\n"
     "- Office: 110 East 60th Street, Suite 800, New York, NY 10022."
 )
+
+# --- Grok + EMA read-only scheduling tools ---
+SYSTEM_INSTRUCTIONS_SCHEDULING = (
+    "You are Genie, the receptionist at Liora Dermatology & Aesthetics in New York City. "
+    "You are a real person — never say you are an AI, a bot, or a virtual assistant. "
+    "Warm, short phone turns. One or two sentences. Doctor: Dr. Rhee. "
+    "Office: 110 East 60th Street, Suite 800, New York, NY 10022. Timezone America/New_York.\n\n"
+
+    "Caller context name hint (may be wrong): {patient_name}.\n\n"
+
+    "YOU HAVE READ-ONLY SCHEDULING TOOLS (ModMed EMA). Use them — do not invent appointments or times.\n"
+    "Tools: lookup_patient, list_upcoming_appointments, list_visit_types, find_open_slots, schedule_lookup.\n"
+    "You CANNOT book, reschedule, cancel, or change anything in the chart. "
+    "If they want a change, collect the preferred option and say staff will confirm it — "
+    "or offer to transfer. Never claim you already moved a visit.\n\n"
+
+    "FLOW:\n"
+    "1. Greet per call direction rules from the system (inbound: greet first; outbound: wait for hello).\n"
+    "2. Identify the patient: full name + date of birth (and phone if needed). Call lookup_patient or schedule_lookup.\n"
+    "3. If matched: summarize upcoming visits with list_upcoming_appointments or schedule_lookup.\n"
+    "4. If they want a new time or have none: ask what kind of visit → list_visit_types → find_open_slots. "
+    "Offer only two or three options in plain speech (weekday, time, provider).\n"
+    "5. If none / ambiguous / inactive: apologize and offer a human callback — do not guess charts.\n"
+    "6. End warmly. Mention portal forms only if relevant.\n\n"
+
+    "STYLE: short, natural, no tool names out loud, no reading JSON, no PHI dumps."
+)
+

@@ -2,13 +2,17 @@
 
 Connects to Grok's bidirectional audio WebSocket for real-time voice conversation.
 Sends/receives G.711 μ-law audio encoded as base64.
+Supports custom function tools (EMA read-only scheduling).
 """
+
+from __future__ import annotations
 
 import asyncio
 import base64
 import json
 import logging
 from typing import Callable, Optional
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 import websockets
 
@@ -16,6 +20,16 @@ from . import config
 from .ai_bridge import AIBridge
 
 logger = logging.getLogger(__name__)
+
+
+def _realtime_url() -> str:
+    """Ensure model=grok-voice-latest is on the WS URL."""
+    base = config.GROK_REALTIME_URL or "wss://api.x.ai/v1/realtime"
+    model = getattr(config, "GROK_VOICE_MODEL", None) or "grok-voice-latest"
+    parts = urlparse(base)
+    q = dict(parse_qsl(parts.query, keep_blank_values=True))
+    q.setdefault("model", model)
+    return urlunparse(parts._replace(query=urlencode(q)))
 
 
 class GrokBridge(AIBridge):
@@ -29,6 +43,7 @@ class GrokBridge(AIBridge):
         on_speech_stopped: Optional[Callable] = None,
         on_response_done: Optional[Callable] = None,
         on_transcript: Optional[Callable] = None,
+        enable_ema_tools: Optional[bool] = None,
     ):
         super().__init__(
             on_audio=on_audio,
@@ -43,11 +58,20 @@ class GrokBridge(AIBridge):
 
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self._running = False
+        self._tool_flush_task: Optional[asyncio.Task] = None
+
+        if enable_ema_tools is None:
+            try:
+                from .ema_tools import voice_tools_enabled
+                enable_ema_tools = voice_tools_enabled()
+            except Exception:
+                enable_ema_tools = False
+        self.enable_ema_tools = bool(enable_ema_tools)
 
     async def connect(self):
         """Connect to Grok realtime WebSocket."""
         self._session_ready = asyncio.Event()
-        url = config.GROK_REALTIME_URL
+        url = _realtime_url()
         headers = {
             "Authorization": f"Bearer {self.api_key}",
         }
@@ -63,24 +87,36 @@ class GrokBridge(AIBridge):
         logger.info("Grok WebSocket connected")
 
     async def configure_session(self, patient_name: str = "the patient"):
-        """Send session.update to configure voice, audio format, and system instructions."""
-        instructions = config.SYSTEM_INSTRUCTIONS.format(patient_name=patient_name)
+        """Send session.update to configure voice, audio format, tools, instructions."""
+        if self.enable_ema_tools:
+            instructions = config.SYSTEM_INSTRUCTIONS_SCHEDULING.format(
+                patient_name=patient_name
+            )
+        else:
+            instructions = config.SYSTEM_INSTRUCTIONS.format(patient_name=patient_name)
+
+        session: dict = {
+            "voice": config.GROK_VOICE,
+            "instructions": instructions,
+            "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.3,
+                "silence_duration_ms": 300,
+            },
+            "audio": {
+                "input": {"format": {"type": "audio/pcmu"}},
+                "output": {"format": {"type": "audio/pcmu"}},
+            },
+        }
+
+        if self.enable_ema_tools:
+            from .ema_tools import EMA_TOOL_DEFINITIONS
+            session["tools"] = EMA_TOOL_DEFINITIONS
+            logger.info("EMA read-only tools enabled (%d tools)", len(EMA_TOOL_DEFINITIONS))
+
         session_config = {
             "type": "session.update",
-            "session": {
-                "voice": config.GROK_VOICE,
-                "temperature": 0.9,
-                "instructions": instructions,
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.3,
-                    "silence_duration_ms": 300,
-                },
-                "audio": {
-                    "input": {"format": {"type": "audio/pcmu"}},
-                    "output": {"format": {"type": "audio/pcmu"}},
-                },
-            },
+            "session": session,
         }
 
         logger.info("Sending session.update to Grok")
@@ -148,6 +184,56 @@ class GrokBridge(AIBridge):
         finally:
             self._running = False
 
+    async def _handle_function_call(self, event: dict):
+        """Execute client-side function tool and return output to Grok."""
+        from .ema_tools import handle_ema_tool
+
+        name = event.get("name") or ""
+        call_id = event.get("call_id") or ""
+        raw_args = event.get("arguments") or "{}"
+        try:
+            arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+        except json.JSONDecodeError:
+            arguments = {}
+
+        logger.info("Grok function call: %s call_id=%s args_keys=%s", name, call_id, list(arguments.keys()))
+
+        # Run blocking EMA I/O off the event loop
+        output = await asyncio.to_thread(handle_ema_tool, name, arguments)
+
+        if not self.ws:
+            return
+
+        await self.ws.send(json.dumps({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            },
+        }))
+        logger.info("Sent function_call_output for %s (%d chars)", name, len(output))
+
+        # Debounce response.create so parallel tool calls all return first
+        if self._tool_flush_task and not self._tool_flush_task.done():
+            self._tool_flush_task.cancel()
+            try:
+                await self._tool_flush_task
+            except asyncio.CancelledError:
+                pass
+        self._tool_flush_task = asyncio.create_task(self._flush_tool_response())
+
+    async def _flush_tool_response(self):
+        try:
+            await asyncio.sleep(0.2)
+            if self.ws:
+                await self.ws.send(json.dumps({"type": "response.create"}))
+                logger.info("Tool results flushed — response.create")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to flush tool response.create")
+
     async def _dispatch(self, event: dict):
         """Route Grok events to handlers."""
         event_type = event.get("type", "")
@@ -159,12 +245,15 @@ class GrokBridge(AIBridge):
             logger.info("Grok session configured")
             self._session_ready.set()
 
+        elif event_type == "response.function_call_arguments.done":
+            await self._handle_function_call(event)
+
         elif event_type == "response.output_audio.delta":
             # Outbound audio from Grok
             audio_b64 = event.get("delta", "")
             if audio_b64 and self.on_audio:
                 mulaw_bytes = base64.b64decode(audio_b64)
-                if not hasattr(self, '_audio_delta_count'):
+                if not hasattr(self, "_audio_delta_count"):
                     self._audio_delta_count = 0
                 self._audio_delta_count += 1
                 if self._audio_delta_count == 1:
@@ -192,13 +281,11 @@ class GrokBridge(AIBridge):
             logger.debug("Grok audio output complete")
 
         elif event_type == "response.audio_transcript.delta":
-            # Real-time transcript of Grok's speech
             text = event.get("delta", "")
             if text and self.on_transcript:
                 await self.on_transcript(text, "assistant")
 
         elif event_type == "conversation.item.input_audio_transcription.completed":
-            # Transcript of user's speech
             text = event.get("transcript", "")
             if text and self.on_transcript:
                 await self.on_transcript(text, "user")
@@ -210,10 +297,15 @@ class GrokBridge(AIBridge):
         elif event_type == "response.created":
             logger.info("Grok response created")
 
-        elif event_type in ("response.output_item.added",
-                            "response.content_part.added", "response.content_part.done",
-                            "response.output_item.done", "rate_limits.updated",
-                            "input_audio_buffer.committed"):
+        elif event_type in (
+            "response.output_item.added",
+            "response.content_part.added",
+            "response.content_part.done",
+            "response.output_item.done",
+            "rate_limits.updated",
+            "input_audio_buffer.committed",
+            "response.function_call_arguments.delta",
+        ):
             logger.debug(f"Grok event: {event_type}")
 
         else:

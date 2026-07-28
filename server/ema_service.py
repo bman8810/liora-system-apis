@@ -8,6 +8,8 @@ import threading
 
 from liora_tools.auth.session_manager import get_ema_client, save_credentials
 from liora_tools.modmed.client import EmaClient
+from liora_tools.modmed.scheduling_flow import SchedulingFlow
+from liora_tools.modmed.write_gate import require_ema_writes
 
 _client: EmaClient | None = None
 _lock = threading.Lock()
@@ -116,6 +118,8 @@ async def get_patient(patient_id: str, selector: str = None) -> dict:
 
 
 async def send_portal_email(patient_id: str, username: str, email: str) -> None:
+    require_ema_writes("send_portal_email")
+
     def _call():
         _get_client().send_portal_email(patient_id, username, email)
     await asyncio.to_thread(_call)
@@ -157,6 +161,8 @@ async def create_appointment(patient_id: int, provider_id: int,
                              scheduled_start: str, duration: int = 15,
                              reason: str = "", notes: str = "",
                              new_patient: bool = False) -> dict:
+    require_ema_writes("create_appointment")
+
     def _call():
         from datetime import datetime, timedelta
 
@@ -227,6 +233,8 @@ async def create_appointment(patient_id: int, provider_id: int,
 
 
 async def update_appointment(appointment_id: str, payload: dict) -> dict:
+    require_ema_writes("update_appointment")
+
     def _call():
         return _get_client().update_appointment(appointment_id, payload)
     return await asyncio.to_thread(_call)
@@ -250,6 +258,8 @@ async def find_slots(appt_type_id: str, duration: int = 15,
 async def reschedule(appointment_id: str, new_start: str,
                      new_duration: int = None, provider_id: int = None,
                      reason: str = "PATIENT_RESCHEDULE") -> dict:
+    require_ema_writes("reschedule")
+
     def _call():
         return _get_client().reschedule(
             appointment_id=appointment_id, new_start=new_start,
@@ -260,9 +270,56 @@ async def reschedule(appointment_id: str, new_start: str,
 
 async def cancel_appointment(appointment_id: str, reason: str = "PATIENT_CANCELLED",
                              notes: str = "") -> dict:
+    require_ema_writes("cancel_appointment")
+
     def _call():
         return _get_client().cancel_appointment(
             appointment_id=appointment_id, reason=reason, notes=notes,
+        )
+    return await asyncio.to_thread(_call)
+
+
+# -- Read-only scheduling flow --
+
+async def validate_patient(last_name: str = None, first_name: str = None,
+                           dob: str = None, phone: str = None,
+                           mrn: str = None, page_size: int = 25) -> dict:
+    def _call():
+        return SchedulingFlow(_get_client()).validate_patient(
+            last_name=last_name, first_name=first_name, dob=dob,
+            phone=phone, mrn=mrn, page_size=page_size,
+        )
+    return await asyncio.to_thread(_call)
+
+
+async def list_upcoming_for_patient(patient_id, days_ahead: int = 90,
+                                    page_size: int = 50) -> dict:
+    def _call():
+        return SchedulingFlow(_get_client()).list_upcoming_appointments(
+            patient_id, days_ahead=days_ahead, page_size=page_size,
+        )
+    return await asyncio.to_thread(_call)
+
+
+async def list_visit_types() -> list:
+    def _call():
+        return SchedulingFlow(_get_client()).list_visit_types()
+    return await asyncio.to_thread(_call)
+
+
+async def scheduling_lookup(
+    last_name: str = None, first_name: str = None, dob: str = None,
+    phone: str = None, mrn: str = None, days_ahead: int = 90,
+    appt_type_id=None, duration: int = 15, time_of_day: str = "ANYTIME",
+    specific_date: str = None, slot_limit: int = 5,
+) -> dict:
+    def _call():
+        return SchedulingFlow(_get_client()).lookup(
+            last_name=last_name, first_name=first_name, dob=dob,
+            phone=phone, mrn=mrn, days_ahead=days_ahead,
+            appt_type_id=appt_type_id, duration=duration,
+            time_of_day=time_of_day, specific_date=specific_date,
+            slot_limit=slot_limit,
         )
     return await asyncio.to_thread(_call)
 
