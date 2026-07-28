@@ -1,0 +1,82 @@
+{
+  "threads": [
+    {
+      "threadId": "thr-np-001",
+      "locationId": "d8508d79-c71c-4678-b139-eaedb19c2159",
+      "personId": "per-001",
+      "personPhone": "+13302067819",
+      "person": {
+        "firstName": "Alex",
+        "lastName": "Example",
+        "status": "ACTIVE"
+      },
+      "messages": [
+        {
+          "smsId": "sms-np-reply-1",
+          "timestamp": "2026-07-27T15:04:00Z",
+          "fragment": "Hi I got the portal link from Zocdoc booking, where do I add my card?"
+        }
+      ],
+      "resultType": "RESULT_TYPE_THREAD"
+    },
+    {
+      "threadId": "thr-sched-002",
+      "locationId": "d8508d79-c71c-4678-b139-eaedb19c2159",
+      "personId": "per-002",
+      "personPhone": "+19175551010",
+      "person": {
+        "firstName": "Sam",
+        "lastName": "Patient",
+        "status": "ACTIVE"
+      },
+      "messages": [
+        {
+          "smsId": "sms-sched-1",
+          "timestamp": "2026-07-27T16:20:11Z",
+          "fragment": "Can I reschedule my appointment to next Tuesday afternoon?"
+        }
+      ],
+      "resultType": "RESULT_TYPE_THREAD"
+    },
+    {
+      "threadId": "thr-refill-003",
+      "locationId": "d8508d79-c71c-4678-b139-eaedb19c2159",
+      "personId": "per-003",
+      "personPhone": "+19175555577",
+      "person": {
+        "firstName": "Jordan",
+        "lastName": "Lee",
+        "status": "ACTIVE"
+      },
+      "messages": [
+        {
+          "smsId": "sms-refill-1",
+          "timestamp": "2026-07-27T17:01:00Z",
+          "fragment": "Need a refill on my prescription cream please"
+        }
+      ],
+      "resultType": "RESULT_TYPE_THREAD"
+    },
+    {
+      "threadId": "thr-unknown-004",
+      "locationId": "d8508d79-c71c-4678-b139-eaedb19c2159",
+      "personId": "per-004",
+      "personPhone": "+12125550100",
+      "person": {
+        "firstName": "Pat",
+        "lastName": "Mystery",
+        "status": "ACTIVE"
+      },
+      "messages": [
+        {
+          "smsId": "sms-unk-1",
+          "timestamp": "2026-07-27T18:00:00Z",
+          "fragment": "asdf qwer hello???"
+        }
+      ],
+      "resultType": "RESULT_TYPE_THREAD"
+    }
+  ],
+  "numResults": 4,
+  "nextPageToken": ""
+}

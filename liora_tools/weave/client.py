@@ -57,11 +57,25 @@ class WeaveClient:
 
     # -- Messaging --
 
-    def list_threads(self, page_size: int = 25) -> dict:
-        return self._get("/sms/data/v4/threads", {
+    def list_threads(
+        self,
+        page_size: int = 25,
+        page_token: str | None = None,
+    ) -> dict:
+        """List recent inbox threads (Firestore-backed; ~100 practical cap).
+
+        Prefer ``search_messages`` for durable inbound workers. This exists
+        for shallow recent-inbox sweeps only (see weave/inbound.py).
+
+        Pagination uses ``olderPageToken`` from the prior response when set.
+        """
+        params = {
             "locationIds": self._cfg.location_id,
             "pageSize": str(page_size),
-        })
+        }
+        if page_token:
+            params["olderPageToken"] = page_token
+        return self._get("/sms/data/v4/threads", params)
 
     def get_thread(self, thread_id: str, page_size: int = 25) -> dict:
         return self._get(f"/sms/data/v4/unified/threads/{thread_id}", {
@@ -69,7 +83,12 @@ class WeaveClient:
             "pageSize": str(page_size),
         })
 
-    def search_messages(self, query: str, page_size: int = 25) -> dict:
+    def search_messages(
+        self,
+        query: str,
+        page_size: int = 25,
+        page_token: str | None = None,
+    ) -> dict:
         """Search messages and contacts by text query.
 
         Uses the /sms/search/v2 endpoint (backed by a search index, NOT
@@ -78,17 +97,23 @@ class WeaveClient:
         Searches both message body text and contact names. Returns threads
         with matching message snippets, person details, and threadIds.
 
+        Pagination: pass ``page_token`` from a prior response's
+        ``nextPageToken`` until empty.
+
         Returns dict with keys: threads, numResults, nextPageToken.
         Each thread has: threadId, personPhone, person, messages (snippets),
         resultType (RESULT_TYPE_THREAD for body match, RESULT_TYPE_PERSON
         for name match).
         """
-        return self._get("/sms/search/v2", {
+        params = {
             "locationId": self._cfg.location_id,
             "groupIds": self._cfg.location_id,
             "query": query,
             "pageSize": str(page_size),
-        })
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        return self._get("/sms/search/v2", params)
 
     def send_message(self, person_phone: str, body: str, person_id: str = None,
                      related_ids: list = None, correlation_id: str = None) -> dict:
