@@ -20,8 +20,9 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "lookup_patient",
         "description": (
             "Find a patient in ModMed EMA by name, date of birth, phone, and/or MRN. "
-            "Use before discussing appointments. Prefer last name + DOB. "
-            "Returns match status: matched, none, ambiguous, or inactive."
+            "Use before discussing appointments. Outbound: prefer dialed phone + DOB "
+            "(phone auto-filled from call when omitted). Filters TEST/PHREESIA noise "
+            "on multi-match. Returns match status: matched, none, ambiguous, or inactive."
         ),
         "parameters": {
             "type": "object",
@@ -37,6 +38,12 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "description": "Phone number any format; paired with name/DOB",
                 },
                 "mrn": {"type": "string", "description": "Medical record number"},
+                "include_test_patients": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, keep TEST/PHREESIA charts (lab only). Default false."
+                    ),
+                },
             },
             "required": [],
         },
@@ -46,7 +53,8 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "list_upcoming_appointments",
         "description": (
             "List upcoming open appointments for a validated patient_id "
-            "(from lookup_patient). Speaks times in America/New_York context."
+            "(from lookup_patient). Empty window returns count=0, appointments=[]. "
+            "Each item has speak_as and local_time in Eastern — read speak_as aloud, never UTC."
         ),
         "parameters": {
             "type": "object",
@@ -58,6 +66,38 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "days_ahead": {
                     "type": "integer",
                     "description": "Days forward to search (default 90)",
+                },
+            },
+            "required": ["patient_id"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "list_past_appointments",
+        "description": (
+            "List recent PAST appointments for patient_id (most recent first). "
+            "Use for last visit / history. Default excludes cancelled. "
+            "Empty window returns count=0, latest=null. READ ONLY. "
+            "Read speak_as Eastern only — never UTC."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "patient_id": {
+                    "type": "integer",
+                    "description": "EMA patient id from lookup_patient",
+                },
+                "days_back": {
+                    "type": "integer",
+                    "description": "Days backward to search (default 365)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max appointments to return (default 5)",
+                },
+                "include_cancelled": {
+                    "type": "boolean",
+                    "description": "Include cancelled if true (default false)",
                 },
             },
             "required": ["patient_id"],
@@ -77,7 +117,8 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "find_open_slots",
         "description": (
             "Find open appointment slots for a visit type. "
-            "Offer only 2–3 options to the caller. READ ONLY — does not book."
+            "Offer only 2–3 options to the caller. READ ONLY — does not book. "
+            "Read each slot speak_as (Eastern)."
         ),
         "parameters": {
             "type": "object",
@@ -110,9 +151,10 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "name": "schedule_lookup",
         "description": (
-            "One-shot read-only flow: validate patient, list upcoming appts, "
-            "and optionally find open slots. Prefer this when the caller wants "
-            "to check or move a visit. Does NOT book, reschedule, or cancel."
+            "One-shot read-only flow: validate patient (TEST/PHREESIA filtered), "
+            "list upcoming + past appts, and optionally find open slots. "
+            "Prefer this when the caller wants to check or move a visit. "
+            "Does NOT book, reschedule, or cancel."
         ),
         "parameters": {
             "type": "object",
@@ -126,7 +168,9 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "duration": {"type": "integer"},
                 "time_of_day": {"type": "string"},
                 "days_ahead": {"type": "integer"},
+                "days_back": {"type": "integer"},
                 "slot_limit": {"type": "integer"},
+                "include_test_patients": {"type": "boolean"},
             },
             "required": [],
         },
@@ -156,8 +200,34 @@ def _compact_json(data: Any) -> str:
     return json.dumps(data, default=str, separators=(",", ":"))
 
 
+def _with_outbound_phone(arguments: dict) -> dict:
+    """Inject dialed number when voice agent set OUTBOUND_DIAL_PHONE."""
+    args = dict(arguments or {})
+    if not args.get("phone"):
+        dial = (os.environ.get("OUTBOUND_DIAL_PHONE") or "").strip()
+        if dial:
+            args["phone"] = dial
+    return args
+
+
+def _require_patient_id(arguments: dict) -> tuple[Any, str | None]:
+    pid = arguments.get("patient_id")
+    if pid is None or pid == "":
+        return None, _compact_json({
+            "error": "patient_id_required",
+            "message": "Call lookup_patient first and pass patient_id.",
+            "count": 0,
+            "appointments": [],
+        })
+    return pid, None
+
+
 def handle_ema_tool(name: str, arguments: dict) -> str:
     """Execute a read-only EMA tool; return JSON string for Grok."""
+    known = {t["name"] for t in EMA_TOOL_DEFINITIONS}
+    if name not in known:
+        return _compact_json({"error": "unknown_tool", "name": name})
+
     try:
         flow = _get_flow()
     except Exception as e:
@@ -172,20 +242,32 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
 
     try:
         if name == "lookup_patient":
+            arguments = _with_outbound_phone(arguments)
             result = flow.validate_patient(
                 last_name=arguments.get("last_name"),
                 first_name=arguments.get("first_name"),
                 dob=arguments.get("dob"),
                 phone=arguments.get("phone"),
                 mrn=arguments.get("mrn"),
+                include_test_patients=bool(arguments.get("include_test_patients") or False),
             )
         elif name == "list_upcoming_appointments":
-            pid = arguments.get("patient_id")
-            if pid is None:
-                return _compact_json({"error": "patient_id_required"})
+            pid, err = _require_patient_id(arguments)
+            if err:
+                return err
             result = flow.list_upcoming_appointments(
                 pid,
                 days_ahead=int(arguments.get("days_ahead") or 90),
+            )
+        elif name == "list_past_appointments":
+            pid, err = _require_patient_id(arguments)
+            if err:
+                return err
+            result = flow.list_past_appointments(
+                pid,
+                days_back=int(arguments.get("days_back") or 365),
+                limit=int(arguments.get("limit") or 5),
+                include_cancelled=bool(arguments.get("include_cancelled") or False),
             )
         elif name == "list_visit_types":
             types = flow.list_visit_types()
@@ -203,6 +285,7 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
                 limit=int(arguments.get("limit") or 5),
             )
         elif name == "schedule_lookup":
+            arguments = _with_outbound_phone(arguments)
             result = flow.lookup(
                 last_name=arguments.get("last_name"),
                 first_name=arguments.get("first_name"),
@@ -210,6 +293,9 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
                 phone=arguments.get("phone"),
                 mrn=arguments.get("mrn"),
                 days_ahead=int(arguments.get("days_ahead") or 90),
+                days_back=int(arguments.get("days_back") or 365),
+                include_past=True,
+                include_test_patients=bool(arguments.get("include_test_patients") or False),
                 appt_type_id=arguments.get("appt_type_id"),
                 duration=int(arguments.get("duration") or 15),
                 time_of_day=arguments.get("time_of_day") or "ANYTIME",
@@ -218,7 +304,7 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
         else:
             return _compact_json({"error": "unknown_tool", "name": name})
 
-        # Never claim write capability
+        # Never claim write capability on this read surface
         if isinstance(result, dict):
             result = {**result, "writes_enabled": False, "booking_available": False}
         return _compact_json(result)

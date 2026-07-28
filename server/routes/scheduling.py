@@ -48,10 +48,14 @@ async def flow_validate(
     dob: str = Query(None, description="YYYY-MM-DD"),
     phone: str = Query(None),
     mrn: str = Query(None),
+    include_test_patients: bool = Query(
+        False,
+        description="Keep TEST/PHREESIA charts (lab). Default filters them on multi-match.",
+    ),
 ):
     return await ema_service.validate_patient(
         last_name=last_name, first_name=first_name, dob=dob,
-        phone=phone, mrn=mrn,
+        phone=phone, mrn=mrn, include_test_patients=include_test_patients,
     )
 
 
@@ -65,6 +69,21 @@ async def flow_upcoming(
     )
 
 
+@router.get("/flow/patients/{patient_id}/past")
+async def flow_past(
+    patient_id: str,
+    days_back: int = Query(365),
+    limit: int = Query(5),
+    include_cancelled: bool = Query(False),
+):
+    return await ema_service.list_past_for_patient(
+        patient_id=patient_id,
+        days_back=days_back,
+        limit=limit,
+        include_cancelled=include_cancelled,
+    )
+
+
 @router.get("/flow/lookup")
 async def flow_lookup(
     last_name: str = Query(None),
@@ -73,6 +92,9 @@ async def flow_lookup(
     phone: str = Query(None),
     mrn: str = Query(None),
     days_ahead: int = Query(90),
+    days_back: int = Query(365),
+    include_past: bool = Query(True),
+    include_test_patients: bool = Query(False),
     appt_type_id: str = Query(None),
     duration: int = Query(15),
     time_of_day: str = Query("ANYTIME"),
@@ -82,6 +104,8 @@ async def flow_lookup(
     return await ema_service.scheduling_lookup(
         last_name=last_name, first_name=first_name, dob=dob,
         phone=phone, mrn=mrn, days_ahead=days_ahead,
+        days_back=days_back, include_past=include_past,
+        include_test_patients=include_test_patients,
         appt_type_id=appt_type_id, duration=duration,
         time_of_day=time_of_day, specific_date=specific_date,
         slot_limit=slot_limit,
