@@ -111,8 +111,15 @@ class GrokBridge(AIBridge):
 
         if self.enable_ema_tools:
             from .ema_tools import EMA_TOOL_DEFINITIONS
-            session["tools"] = EMA_TOOL_DEFINITIONS
-            logger.info("EMA read-only tools enabled (%d tools)", len(EMA_TOOL_DEFINITIONS))
+            tools = list(EMA_TOOL_DEFINITIONS)
+            try:
+                from .ops_tools import OPS_TOOL_DEFINITIONS, ops_tools_enabled
+                if ops_tools_enabled():
+                    tools.extend(OPS_TOOL_DEFINITIONS)
+            except Exception:
+                logger.exception("Failed to load ops tools; continuing with EMA only")
+            session["tools"] = tools
+            logger.info("Voice tools enabled (%d tools)", len(tools))
 
         session_config = {
             "type": "session.update",
@@ -198,8 +205,20 @@ class GrokBridge(AIBridge):
 
         logger.info("Grok function call: %s call_id=%s args_keys=%s", name, call_id, list(arguments.keys()))
 
-        # Run blocking EMA I/O off the event loop
-        output = await asyncio.to_thread(handle_ema_tool, name, arguments)
+        ops_names: set[str] = set()
+        handle_ops = None
+        try:
+            from .ops_tools import OPS_TOOL_DEFINITIONS, handle_ops_tool
+            ops_names = {t["name"] for t in OPS_TOOL_DEFINITIONS}
+            handle_ops = handle_ops_tool
+        except Exception:
+            logger.exception("ops_tools unavailable for function call routing")
+
+        if name in ops_names and handle_ops is not None:
+            output = await asyncio.to_thread(handle_ops, name, arguments)
+        else:
+            # EMA tools (and unknown → EMA handler returns unknown_tool)
+            output = await asyncio.to_thread(handle_ema_tool, name, arguments)
 
         if not self.ws:
             return
