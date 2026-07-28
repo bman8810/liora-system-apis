@@ -59,14 +59,27 @@ python -m liora_tools ema visit-types
 | `GROK_VOICE_MODEL` | `grok-voice-latest` |
 | `EMA_WRITES_ENABLED` | off |
 
-Tools registered on `session.update`: `lookup_patient`, `list_upcoming_appointments`, `list_visit_types`, `find_open_slots`, `schedule_lookup`.  
+Tools on `session.update`:
+
+- Reads: `lookup_patient`, `list_upcoming_appointments`, `list_visit_types`, `find_open_slots`, `schedule_lookup`
+- Writes (each requires `confirmed=true` **and** `EMA_WRITES_ENABLED`): `book_appointment`, `reschedule_appointment`, `cancel_appointment`
+
 Handler: `voice_agent/ema_tools.py` → `SchedulingFlow`. Function events: `response.function_call_arguments.done` → `function_call_output` → debounced `response.create`.
 
-## Write gate
+## Write gate + multi-step confirm
 
-Unset / false blocks: portal email, create, update, reschedule, cancel.
+Unset / false blocks: portal email, create, update, reschedule, cancel (client `WriteGatedError`).
+
+Voice/flow write policy (`t_d01d42e2`):
+
+1. **Confirm before each write** — `confirmed` must be true via strict parse (`is_confirmed`). String `"false"` is **not** confirmed.
+2. **One write per confirm** — no batch cancel+book tool. Cancel-then-book fallback = two verbal yeses, two tool calls.
+3. Without confirm → `{status: needs_confirmation, pending_write, confirm_policy: one_write_per_confirm}` and **zero** EMA mutation I/O.
+4. With confirm but writes off → `{status: writes_disabled, error: writes_disabled}` (or flow raises `WriteGatedError` before client call). No partial mutation.
+5. Lab path when writes on: book → list upcoming (verify) → cancel, each write confirmed separately.
 
 ## Next
 
-- Live phone smoke with tools mid-call
+- Live phone smoke with tools mid-call (`t_fc2c842f`)
 - Unlock writes only with explicit product OK
+- Align sibling P0 harden (speak_as / Rhee ranking / past list) when those cards land
