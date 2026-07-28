@@ -36,11 +36,17 @@ Module form: `python -m liora_tools.scripts.zocdoc_new_booking --dry-run`
 Canonical field name (coordinate across GB + job + Weave metadata): always
 **`correlation_id`**.
 
+**SoT (locked `t_71b53094`):** [CORRELATION-ID-SOT.md](./CORRELATION-ID-SOT.md)
+(full write-up in genies-bottle `docs/CORRELATION-ID-SOT.md`).
+
 ```
 zocdoc-{appointmentId}
 ```
 
 Fallback if appointment id missing: `zocdoc-{mrn}-{appt_date}`.
+
+Messaging/calls hooks later: **same root** id + step name (not a second root).
+Weave `relatedIds` gets the plain string; SMS body stays template-only.
 
 Never put PHI into `correlation_id`. Never put `correlation_id` in the
 patient-facing SMS body.
