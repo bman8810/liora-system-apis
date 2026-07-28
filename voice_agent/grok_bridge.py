@@ -111,8 +111,14 @@ class GrokBridge(AIBridge):
 
         if self.enable_ema_tools:
             from .ema_tools import EMA_TOOL_DEFINITIONS
-            session["tools"] = EMA_TOOL_DEFINITIONS
-            logger.info("EMA read-only tools enabled (%d tools)", len(EMA_TOOL_DEFINITIONS))
+            from .call_scripts import SCRIPT_TOOL_DEFINITIONS
+
+            session["tools"] = list(EMA_TOOL_DEFINITIONS) + list(SCRIPT_TOOL_DEFINITIONS)
+            logger.info(
+                "EMA + script tools enabled (%d ema + %d script)",
+                len(EMA_TOOL_DEFINITIONS),
+                len(SCRIPT_TOOL_DEFINITIONS),
+            )
 
         session_config = {
             "type": "session.update",
@@ -186,6 +192,7 @@ class GrokBridge(AIBridge):
 
     async def _handle_function_call(self, event: dict):
         """Execute client-side function tool and return output to Grok."""
+        from .call_scripts import SCRIPT_TOOL_NAMES, handle_script_tool
         from .ema_tools import handle_ema_tool
 
         name = event.get("name") or ""
@@ -198,8 +205,11 @@ class GrokBridge(AIBridge):
 
         logger.info("Grok function call: %s call_id=%s args_keys=%s", name, call_id, list(arguments.keys()))
 
-        # Run blocking EMA I/O off the event loop
-        output = await asyncio.to_thread(handle_ema_tool, name, arguments)
+        # Script tools are local; EMA tools may block on network — both off the loop
+        if name in SCRIPT_TOOL_NAMES:
+            output = await asyncio.to_thread(handle_script_tool, name, arguments)
+        else:
+            output = await asyncio.to_thread(handle_ema_tool, name, arguments)
 
         if not self.ws:
             return
