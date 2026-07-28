@@ -48,7 +48,7 @@ class WeaveConfig:
 
 @dataclass
 class EmaConfig:
-    base_url: str = "https://lioraderm.ema.md"
+    base_url: str = "https://lioraderm.modmedapp.com"
     cookie_file: str = "ema_cookies.json"
     facility_id: str = "2040"
 

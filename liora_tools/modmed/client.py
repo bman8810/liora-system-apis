@@ -184,10 +184,14 @@ class EmaClient:
 
     def create_appointment(self, payload: dict) -> dict:
         """Create an appointment (v2 endpoint)."""
-        return self._post("/ema/ws/v2/appointment", payload).json()
+        from liora_tools.modmed.write_gate import require_ema_writes
+        require_ema_writes("create_appointment")
+        return self._post("/ema/ws/v2/appointment?mapId=APPOINTMENT_DETAILS", payload).json()
 
     def update_appointment(self, appointment_id: str, payload: dict) -> dict:
         """Update an appointment (v2 endpoint)."""
+        from liora_tools.modmed.write_gate import require_ema_writes
+        require_ema_writes("update_appointment")
         return self._put(f"/ema/ws/v2/appointment/{appointment_id}", payload).json()
 
     def reschedule(
@@ -218,6 +222,8 @@ class EmaClient:
             OptimisticLockError: If the appointment was modified concurrently.
         """
         from datetime import datetime, timedelta
+        from liora_tools.modmed.write_gate import require_ema_writes
+        require_ema_writes("reschedule")
 
         # Step 1: Fetch current appointment state (v2 gives us the full object)
         current = self._get(
@@ -264,6 +270,8 @@ class EmaClient:
         Returns:
             The cancelled appointment dict from the API.
         """
+        from liora_tools.modmed.write_gate import require_ema_writes
+        require_ema_writes("cancel_appointment")
         # Step 1: Look up the cancel reason ID from the reason name/enum
         reasons = self._get("/ema/ws/v3/appointment/cancel-reason", {
             "where": 'active=="true"',

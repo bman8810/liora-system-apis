@@ -32,3 +32,7 @@ class RateLimitError(LioraAPIError):
 
 class OptimisticLockError(LioraAPIError):
     """objectLockVersion mismatch — appointment was modified concurrently."""
+
+
+class WriteGatedError(LioraAPIError):
+    """EMA mutation blocked until EMA_WRITES_ENABLED is set."""

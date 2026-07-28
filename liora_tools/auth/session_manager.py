@@ -85,10 +85,19 @@ def get_ema_client():
     config = EmaConfig()
     creds = load_credentials("ema")
 
-    # Support both new format {"cookies": [...]} and legacy flat array
+    # Support both new format {"cookies": [...], "base_url": ...} and legacy flat array
     cookies = None
     if creds:
-        cookies = creds.get("cookies") if isinstance(creds, dict) else creds
+        if isinstance(creds, dict):
+            cookies = creds.get("cookies")
+            if creds.get("base_url"):
+                config = EmaConfig(
+                    base_url=creds["base_url"],
+                    cookie_file=config.cookie_file,
+                    facility_id=getattr(config, "facility_id", "2040"),
+                )
+        else:
+            cookies = creds
 
     if cookies:
         client = EmaClient.from_cookies(cookies, config)
