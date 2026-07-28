@@ -340,6 +340,40 @@ class EmaClient:
             params["specificDate"] = f"{specific_date}T00:00:00.000Z"
         return self._get("/ema/ws/v2/appointment/finder", params).json()
 
+    # -- Billing (read-only) --
+
+    def list_charges(
+        self,
+        where: str = None,
+        *,
+        page_size: int = 100,
+        page_number: int = 1,
+        selector: str = None,
+    ) -> list:
+        """GET /ema/ws/v3/charges — charge lines with patientResponsibleBalance."""
+        params = {
+            "paging.pageSize": str(page_size),
+            "paging.pageNumber": str(page_number),
+        }
+        if where:
+            params["where"] = where
+        if selector:
+            params["selector"] = selector
+        return self._get("/ema/ws/v3/charges", params).json()
+
+    def get_appointments_finance_info(self, where: str = None) -> list:
+        """GET /ema/ws/v3/scheduler/appointments-finance-info (read-only).
+
+        Needs scheduler-style ``where`` (facility + date window). Returns rows with
+        appointmentId, balance, paidCopay.
+        """
+        params = {}
+        if where:
+            params["where"] = where
+        return self._get(
+            "/ema/ws/v3/scheduler/appointments-finance-info", params
+        ).json()
+
     # -- Reference Data --
 
     def list_appointment_types(self, page_size: int = 100) -> list:
