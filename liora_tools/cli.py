@@ -73,14 +73,24 @@ def weave_get_thread(args):
 
 
 def weave_send_message(args):
+    """Ad-hoc Weave SMS for ops only.
+
+    Do **not** use this for Zocdoc new-patient flow. That job is
+    template-first only (`run zocdoc-new-booking` → approved template id
+    `00914ffc-…` / "Genie - New Zocdoc Patient"). Free-form body here is
+    intentionally unconstrained for rare manual ops — never wire the job to it.
+    """
     client = get_client("weave")
     result = client.send_message(args.phone, args.body, person_id=args.person_id)
     _output(result)
+    # Activity: phone last4 only — avoid logging full number/body
+    digits = "".join(c for c in (args.phone or "") if c.isdigit())
+    phone_meta = f"***{digits[-4:]}" if len(digits) >= 4 else "(redacted)"
     _report_activity(
         args.agent_id, "weave-api-sms-sent",
-        f"Sent SMS to {args.phone} via Weave API",
+        f"Sent ad-hoc SMS to {phone_meta} via Weave API (not job template path)",
         "liora_tools.weave",
-        {"method": "send_message", "phone": args.phone},
+        {"method": "send_message", "phone_last4": phone_meta, "body_len": len(args.body or "")},
     )
 
 
@@ -373,7 +383,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_page_size(p)
     p.set_defaults(func=weave_get_thread)
 
-    p = w.add_parser("send-message", help="Send an SMS (safety-guarded)")
+    p = w.add_parser(
+        "send-message",
+        help="Ad-hoc SMS only (NOT zocdoc-new-booking; job is template-first)",
+    )
     p.add_argument("--phone", required=True, help="Recipient phone (E.164 or 10-digit)")
     p.add_argument("--body", required=True, help="Message text")
     p.add_argument("--person-id", default=None, help="Weave person ID (optional)")

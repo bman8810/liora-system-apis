@@ -68,10 +68,21 @@ durable job-side source of truth for step resume.
 
 ## PHI / secrets
 
-- Logs mask name/phone/email; errors redact emails and long digit runs
-- GB patient payload: `mrn`, `name`, optional `phone_last4` — not full phone/email
-- SMS body not written to logs
-- No passwords/API keys in repo; use env + Kernel Managed Auth bridge
+| Surface | Policy |
+|---------|--------|
+| Logs / stdout | Masked name (`J*** D***`), phone last4, email local first char only |
+| Errors / feedback | `_redact_error`: emails, phones, JWT (`eyJ…`), `Bearer …`, `api_key`/`password`/`token`/`secret` assignments |
+| GB patient payload | `mrn`, **masked** `name`, optional `phone_last4` — never full phone/email/SMS body |
+| SMS body | Never logged; step detail uses `template_id` + `template_name` only |
+| Secrets | Env + Kernel Managed Auth only; never commit tokens |
+
+### Redacted fields (default omit / mask)
+
+- Full patient name (logs + GB → initials mask)
+- Full phone / email
+- SMS body text
+- Weave/Zocdoc/EMA session tokens, API keys, Bearer headers
+- MRN-like long digit runs inside error strings (phone redaction)
 
 ## Auth
 
@@ -124,12 +135,31 @@ child **Add 30m cron for zocdoc-new-booking job**. Suggested:
 
 Lock prevents overlap if a run exceeds 30m.
 
-## SMS template
+## SMS template (template-first only)
 
-- Id: `00914ffc-ae68-49c8-a76d-a0d78a5d5d21`
-- Fingerprint required in body: `booking cost of $100`
-- Hardcoded full runbook body is default; Weave templator used only if it
-  returns the same fingerprint + `{{FIRST_NAME}}`
+| Field | Value |
+|-------|--------|
+| Name | `Genie - New Zocdoc Patient` |
+| Id | `00914ffc-ae68-49c8-a76d-a0d78a5d5d21` |
+| Fingerprint (required) | `booking cost of $100` |
+| Allowed merge vars | `{{FIRST_NAME}}` only (`SMS_ALLOWED_VARS`) |
+
+**Job path rules**
+
+1. Body must pass `validate_sms_template` then `build_sms_body` before `weave.send_message`.
+2. Free-form / alternate copy is **rejected** (missing fingerprint, unknown `{{VAR}}`, unsubstituted `{{…}}`).
+3. Hardcoded runbook body (`SMS_TEMPLATE_BODY`) is SoT; Weave templator is used only when remote body validates.
+4. CLI `python -m liora_tools weave send-message` is **ad-hoc ops only** — not used by this job. Do not wire the job to free-form CLI send.
+
+### Double-SMS controls (coordinate with job harden)
+
+| Layer | Role |
+|-------|------|
+| GB completed | Skip entire patient |
+| Local StepLedger + step_done | Skip SMS if step 4 already done/skipped |
+| Weave fingerprint search | Skip if `$100` template already present (honored with `--force`) |
+| Job lock | Prevent overlapping ticks |
+| Template gate | Does **not** replace idempotency — only blocks free-form body |
 
 ## Tests
 

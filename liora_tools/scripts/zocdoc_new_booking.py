@@ -46,6 +46,10 @@ _load_dotenv()
 
 TASK_SLUG = "zocdoc-new-booking"
 SMS_TEMPLATE_ID = "00914ffc-ae68-49c8-a76d-a0d78a5d5d21"
+SMS_TEMPLATE_NAME = "Genie - New Zocdoc Patient"
+# Only merge fields the job may substitute. Unknown {{VARS}} are rejected.
+SMS_ALLOWED_VARS = frozenset({"FIRST_NAME"})
+_TEMPLATE_VAR_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 # Full production template (runbook SoT). Prefer this over Weave templator
 # when API returns 401 / empty — never use a shorter alternate body.
 SMS_TEMPLATE_BODY = (
@@ -112,7 +116,13 @@ FLOW_DEFINITION = {
         {"name": "get_booking_details", "service": "zocdoc"},
         {"name": "send_call_request", "service": "zocdoc", "note": "$100 fee avoidance"},
         {"name": "activate_portal", "service": "ema"},
-        {"name": "send_welcome_sms", "service": "weave", "template_id": SMS_TEMPLATE_ID},
+        {
+            "name": "send_welcome_sms",
+            "service": "weave",
+            "template_id": SMS_TEMPLATE_ID,
+            "template_name": SMS_TEMPLATE_NAME,
+            "allowed_vars": sorted(SMS_ALLOWED_VARS),
+        },
         {"name": "report_completed", "service": "genies-bottle"},
     ],
 }
@@ -145,8 +155,8 @@ def _mask_name(name: str | None) -> str:
 
 
 def _patient_gb_payload(mrn: str, name: str, phone: str | None = None) -> dict:
-    """Minimal patient dict for GB — no full phone/email."""
-    out: dict[str, Any] = {"mrn": str(mrn), "name": name}
+    """Minimal patient dict for GB — masked name, no full phone/email."""
+    out: dict[str, Any] = {"mrn": str(mrn), "name": _mask_name(name)}
     if phone:
         out["phone_last4"] = re.sub(r"\D", "", phone)[-4:]
     return out
@@ -154,6 +164,24 @@ def _patient_gb_payload(mrn: str, name: str, phone: str | None = None) -> dict:
 
 def _redact_error(err: BaseException | str) -> str:
     text = str(err)
+    # Secrets before PII so token-like digit runs inside JWTs are gone first
+    text = re.sub(
+        r"Bearer\s+\S+",
+        "Bearer [redacted]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]+",
+        "[token]",
+        text,
+    )
+    text = re.sub(
+        r"(api[_-]?key|secret|password|token)\s*[:=]\s*\S+",
+        r"\1=[redacted]",
+        text,
+        flags=re.IGNORECASE,
+    )
     # Strip obvious emails / long digit runs that may be phone/MRN
     text = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[email]", text)
     text = re.sub(r"\+?\d[\d\s().-]{8,}\d", "[phone]", text)
@@ -483,9 +511,47 @@ def extract_candidates(bookings_data: dict, lookback_minutes: int = 60) -> list[
     return candidates
 
 
+def validate_sms_template(template: str) -> str:
+    """Ensure body is an approved Genie new-patient template.
+
+    Rejects free-form / alternate copy: must carry the $100 fingerprint,
+    must declare {{FIRST_NAME}}, and may only use SMS_ALLOWED_VARS.
+    Returns the stripped template or raises ValueError (no PHI in message).
+    """
+    body = (template or "").strip()
+    if not body:
+        raise ValueError("sms template empty")
+    if SMS_FINGERPRINT not in body:
+        raise ValueError("sms template missing required fingerprint")
+    vars_found = _TEMPLATE_VAR_RE.findall(body)
+    if "FIRST_NAME" not in vars_found:
+        raise ValueError("sms template missing {{FIRST_NAME}}")
+    unknown = sorted({v for v in vars_found if v not in SMS_ALLOWED_VARS})
+    if unknown:
+        raise ValueError(f"sms template has disallowed vars: {', '.join(unknown)}")
+    return body
+
+
+def build_sms_body(template: str, *, first_name: str) -> str:
+    """Render approved template only. Refuses free-form or unsubstituted bodies."""
+    body = validate_sms_template(template)
+    name = (first_name or "").strip() or "there"
+    # Only substitute allowed vars; never accept caller-built free-form text.
+    rendered = body.replace("{{FIRST_NAME}}", name)
+    # Also clear spaced forms if Weave returns {{ FIRST_NAME }}
+    rendered = re.sub(r"\{\{\s*FIRST_NAME\s*\}\}", name, rendered)
+    if "{{" in rendered or "}}" in rendered:
+        raise RuntimeError("refusing to send unsubstituted SMS template vars")
+    if SMS_FINGERPRINT not in rendered:
+        raise RuntimeError("refusing to send non-template SMS (fingerprint lost)")
+    if not rendered.strip():
+        raise RuntimeError("refusing to send empty SMS body")
+    return rendered
+
+
 def render_sms(template: str, first_name: str) -> str:
-    name = (first_name or "there").strip() or "there"
-    return template.replace("{{FIRST_NAME}}", name)
+    """Back-compat alias for build_sms_body."""
+    return build_sms_body(template, first_name=first_name)
 
 
 # ── Lock ─────────────────────────────────────────────────────────────────────
@@ -546,7 +612,13 @@ class JobLock:
 
 
 def _fetch_sms_template(weave) -> str:
-    """Prefer full runbook body; optionally confirm template id exists in Weave."""
+    """Load approved template only.
+
+    Weave templator body is accepted solely when it passes validate_sms_template
+    (fingerprint + allowed vars). Otherwise use hardcoded runbook SoT body.
+    Never returns free-form / alternate shorter copy.
+    """
+    fallback = validate_sms_template(SMS_TEMPLATE_BODY)
     try:
         from liora_tools.config import WeaveConfig
         cfg = WeaveConfig()
@@ -560,14 +632,19 @@ def _fetch_sms_template(weave) -> str:
             if isinstance(templates, dict):
                 templates = templates.get("templates", [])
             for t in templates or []:
-                if t.get("templateId") == SMS_TEMPLATE_ID:
-                    body = t.get("templateString") or t.get("body")
-                    # Only accept if it still carries the $100 fee language
-                    if body and SMS_FINGERPRINT in body and "{{FIRST_NAME}}" in body:
-                        return body
+                tid = t.get("templateId") or t.get("id")
+                tname = (t.get("name") or t.get("templateName") or "").strip()
+                if tid != SMS_TEMPLATE_ID and tname != SMS_TEMPLATE_NAME:
+                    continue
+                body = t.get("templateString") or t.get("body")
+                try:
+                    return validate_sms_template(body or "")
+                except ValueError:
+                    # Remote copy drifted — keep SoT fallback
+                    return fallback
     except Exception:
         pass
-    return SMS_TEMPLATE_BODY
+    return fallback
 
 
 def init_clients(*, require_gb: bool = True):
@@ -789,7 +866,11 @@ def process_one(
             print(f"  WARN {display}: Weave search failed: {_redact_error(e)}")
 
     if dry_run:
-        sms_body = render_sms(sms_template, actual_first)
+        try:
+            sms_body = build_sms_body(sms_template, first_name=actual_first)
+        except (ValueError, RuntimeError) as e:
+            print(f"  WARN {display}: template invalid: {_redact_error(e)}")
+            sms_body = ""
         print(f"  DRY-RUN {display} corr={correlation_id}")
         print(f"    phone={_mask_phone(phone)} email={_mask_email(email)} "
               f"requestId={'yes' if request_id else 'no'} "
@@ -800,7 +881,10 @@ def process_one(
         print(f"    WOULD call_request={'skip-done' if call_already else ('yes' if request_id else 'skip-no-id')}")
         print(f"    WOULD portal={'skip-active' if portal_active or portal_already else ('yes' if ema_patient_id and email else 'skip')}")
         print(f"    WOULD sms={'skip-done' if sms_already or weave_has_sms else ('yes' if phone else 'skip-no-phone')}")
-        print(f"    sms_len={len(sms_body)} fingerprint_ok={SMS_FINGERPRINT in sms_body}")
+        print(
+            f"    sms template_id={SMS_TEMPLATE_ID} template_name={SMS_TEMPLATE_NAME} "
+            f"sms_len={len(sms_body)} fingerprint_ok={SMS_FINGERPRINT in sms_body}"
+        )
         return "dry-run"
 
     started_at = datetime.now(timezone.utc).isoformat()
@@ -929,16 +1013,17 @@ def process_one(
                                    "already messaged"))
         elif phone:
             try:
-                body = render_sms(sms_template, actual_first)
-                if SMS_FINGERPRINT not in body or "{{FIRST_NAME}}" in body:
-                    raise RuntimeError("refusing to send non-template or unsubstituted SMS")
+                body = build_sms_body(sms_template, first_name=actual_first)
                 resp = weave.send_message(phone, body)
                 meta = {}
                 if isinstance(resp, dict):
                     for k in ("smsId", "threadId", "personId"):
                         if resp.get(k):
                             meta[k] = resp[k]
-                detail = "sms sent"
+                detail = (
+                    f"sms sent template_id={SMS_TEMPLATE_ID} "
+                    f"template_name={SMS_TEMPLATE_NAME}"
+                )
                 if meta:
                     detail += f" ids={list(meta.keys())}"
                 steps.append(make_step(4, "Sent Genie SMS via Weave", "done", detail))
