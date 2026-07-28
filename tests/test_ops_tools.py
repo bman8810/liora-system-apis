@@ -342,6 +342,7 @@ def test_ops_tool_definitions_names():
         "flag_running_late",
         "clinic_faq",
         "get_insurance_on_file",
+        "transfer_to_staff",
     }
 
 
