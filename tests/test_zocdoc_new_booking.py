@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from liora_tools.genies_bottle.client import GenieBottleClient
 from liora_tools.scripts.zocdoc_new_booking import (
     SMS_FINGERPRINT,
     SMS_TEMPLATE_BODY,
@@ -23,12 +24,15 @@ from liora_tools.scripts.zocdoc_new_booking import (
     merge_step_lists,
     process_one,
     render_sms,
+    report_failure,
     step_done,
+    validate_correlation_id,
     validate_sms_template,
     _mask_email,
     _mask_phone,
     _patient_gb_payload,
     _redact_error,
+    _safe_log_activity,
 )
 
 
@@ -420,3 +424,159 @@ def test_process_one_booking_timestamp_skips_call(tmp_path):
     assert result == "processed"
     zoc.send_call_request.assert_not_called()
     weave.send_message.assert_called_once()
+
+
+# ── Correlation-id validation + activity (from corr branch) ──────────────────
+
+
+def test_validate_correlation_id_accepts_good():
+    assert validate_correlation_id("zocdoc-app_ABC") == "zocdoc-app_ABC"
+    assert validate_correlation_id("  zocdoc-x  ") == "zocdoc-x"
+
+
+def test_validate_correlation_id_rejects_empty():
+    with pytest.raises(ValueError, match="blank|required"):
+        validate_correlation_id("")
+    with pytest.raises(ValueError, match="blank|required"):
+        validate_correlation_id("   ")
+    with pytest.raises(ValueError, match="required"):
+        validate_correlation_id(None)
+
+
+def test_validate_correlation_id_rejects_non_zocdoc_prefix():
+    with pytest.raises(ValueError, match="zocdoc-"):
+        validate_correlation_id("booking-app_123")
+    with pytest.raises(ValueError, match="too short"):
+        validate_correlation_id("zocdoc")  # no hyphen+rest / len < 8
+
+
+def test_safe_log_activity_payload_no_phi():
+    gb = MagicMock()
+    _safe_log_activity(
+        gb, "weave_sms", "sms done",
+        correlation_id="zocdoc-app_1", step="weave_sms", status="done",
+        extra={"smsId": "s1", "threadId": "t1", "phone": "+12125551212", "body": "secret"},
+    )
+    gb.log_activity.assert_called_once()
+    kwargs = gb.log_activity.call_args
+    payload = kwargs.kwargs.get("payload") or kwargs[1].get("payload")
+    assert payload == {
+        "correlation_id": "zocdoc-app_1",
+        "step": "weave_sms",
+        "status": "done",
+        "smsId": "s1",
+        "threadId": "t1",
+    }
+    assert "phone" not in payload
+    assert "body" not in payload
+
+
+def test_report_process_rejects_blank_correlation_id():
+    client = GenieBottleClient.__new__(GenieBottleClient)
+    with pytest.raises(ValueError, match="correlation_id"):
+        client.report_process("zocdoc-new-booking", "running", correlation_id="  ")
+
+
+def test_process_one_failure_reports_with_steps(tmp_path):
+    """process_one reports failure WITH steps then raises JobStepError."""
+    path = str(tmp_path / "ledger.json")
+    ledger = StepLedger(path)
+    appt = {
+        "appointmentId": "app_fail_1",
+        "patientType": "NEW",
+        "mrn": "M1",
+        "appointmentTimeUtc": "2026-07-22T12:00:00Z",
+        "patient": {"firstName": "Pat", "lastName": "Ient"},
+        "requestId": None,
+    }
+    zoc = MagicMock()
+    zoc.get_booking.return_value = {
+        "data": {"appointmentDetails": {"patient": {}, "requestId": None}}
+    }
+    weave = MagicMock()
+    ema = MagicMock()
+    ema.search_patients.return_value = []
+    gb = _mock_gb()
+
+    with pytest.raises(JobStepError) as ei:
+        process_one(
+            appt=appt,
+            zoc=zoc,
+            weave=weave,
+            ema=ema,
+            gb=gb,
+            sms_template=SMS_TEMPLATE_BODY,
+            dry_run=False,
+            force=False,
+            ledger=ledger,
+        )
+    assert ei.value.step == "call_request"
+    assert ei.value.correlation_id == "zocdoc-app_fail_1"
+    # failed report should include steps
+    failed_calls = [
+        c for c in gb.report_process.call_args_list
+        if (c.args[1] if len(c.args) > 1 else c.kwargs.get("status")) == "failed"
+        or c.kwargs.get("status") == "failed"
+    ]
+    assert failed_calls, "expected report_process(..., status='failed')"
+    failed_kw = failed_calls[0].kwargs
+    assert failed_kw.get("steps"), "failure report must include steps"
+    assert failed_kw.get("correlation_id") == "zocdoc-app_fail_1"
+    gb.request_feedback.assert_called()
+    fb_kw = gb.request_feedback.call_args.kwargs
+    assert fb_kw.get("bot_context", {}).get("correlation_id") == "zocdoc-app_fail_1"
+
+
+def test_process_one_passes_correlation_id_to_weave(tmp_path):
+    """SMS path must pass correlation_id= to Weave (relatedIds), never body."""
+    path = str(tmp_path / "ledger.json")
+    ledger = StepLedger(path)
+    zoc = MagicMock()
+    zoc.get_booking.return_value = {
+        "data": {
+            "appointmentDetails": {
+                "requestId": "req-corr",
+                "patient": {
+                    "firstName": "Pat",
+                    "lastName": "Ent",
+                    "phoneNumber": "2125551212",
+                    "email": "p@example.com",
+                },
+            }
+        }
+    }
+    weave = MagicMock()
+    weave.search_messages.return_value = {"numResults": 0, "threads": []}
+    weave.send_message.return_value = {"smsId": "s1", "threadId": "t1"}
+    ema = MagicMock()
+    ema.search_patients.return_value = []
+    gb = _mock_gb()
+
+    appt = {
+        "appointmentId": "app_corr_sms",
+        "patient": {"firstName": "Pat", "lastName": "Ent"},
+        "appointmentTimeUtc": "2026-07-22T15:00:00Z",
+    }
+    result = process_one(
+        appt=appt,
+        zoc=zoc,
+        weave=weave,
+        ema=ema,
+        gb=gb,
+        sms_template=SMS_TEMPLATE_BODY,
+        dry_run=False,
+        ledger=ledger,
+    )
+    assert result == "processed"
+    weave.send_message.assert_called_once()
+    args, kwargs = weave.send_message.call_args
+    # body is positional arg 1 — must not contain correlation id
+    body = args[1] if len(args) > 1 else kwargs.get("body", "")
+    assert "zocdoc-app_corr_sms" not in body
+    assert kwargs.get("correlation_id") == "zocdoc-app_corr_sms"
+    # Activity trail after side effects
+    actions = [c.args[0] for c in gb.log_activity.call_args_list if c.args]
+    assert "zocdoc_call_request" in actions
+    assert "ema_portal" in actions
+    assert "weave_sms" in actions
+    assert "zocdoc_new_patient_processed" in actions
