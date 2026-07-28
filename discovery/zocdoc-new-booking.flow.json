@@ -1,0 +1,478 @@
+{
+  "task_slug": "zocdoc-new-booking",
+  "flow_version": "1.0.0",
+  "name": "ZocDoc New Patient Booking",
+  "description": "Process Zocdoc NEW-patient bookings: fee call-request, EMA portal, welcome SMS. Messaging and calls attach as correlation hooks (not full workers here).",
+  "executor": {
+    "repo": "liora-system-apis",
+    "module": "liora_tools.scripts.zocdoc_new_booking",
+    "cli": "python -m liora_tools run zocdoc-new-booking",
+    "ledger": "~/.liora/state/zocdoc-new-booking.json",
+    "lock": "~/.liora/locks/zocdoc-new-booking.lock"
+  },
+  "correlation": {
+    "field": "correlation_id",
+    "pattern": "zocdoc-{appointmentId}",
+    "fallback": "zocdoc-{mrn}-{appt_date}",
+    "rules": [
+      "Same id on every report_process upsert (running → completed/failed/dead_letter)",
+      "Never put PHI in correlation_id",
+      "Never put correlation_id in patient-facing SMS body",
+      "Weave breadcrumb: relatedIds plain string only",
+      "Hooks attach to same root correlation_id + step/hook name (no second root id)"
+    ]
+  },
+  "report_contract": {
+    "task_slug": "zocdoc-new-booking",
+    "execution_status": [
+      "running",
+      "completed",
+      "failed",
+      "needs_review",
+      "dead_letter",
+      "dismissed"
+    ],
+    "step_object": {
+      "name": "send_call_request",
+      "status": "done",
+      "detail": "optional operator note",
+      "error": null,
+      "at": "2026-07-28T00:00:00Z",
+      "attempt": 1,
+      "aliases_also_accepted": {
+        "action": "same as name or human label",
+        "step": "integer order 1..N for merge_step_lists"
+      }
+    },
+    "step_status": ["pending", "running", "done", "skipped", "failed"],
+    "patient_payload": {
+      "allowed": ["mrn", "name (masked)", "phone_last4"],
+      "forbidden": ["full phone", "email", "sms body", "tokens"]
+    },
+    "metadata_keys": {
+      "job": "zocdoc_new_booking",
+      "version": "int job code version",
+      "retry_count": "int on re-entry",
+      "last_retry_at": "ISO-8601 optional",
+      "checkpoint": "after_call_request | …",
+      "dead_letter": "bool until status=dead_letter first-class everywhere",
+      "weave": {"smsId": "…", "threadId": "…", "personId": "…"}
+    }
+  },
+  "filters": [
+    {
+      "name": "recent_bookings",
+      "description": "bookingTimeUtc within lookback window (default 90m; cron 30m)"
+    },
+    {
+      "name": "new_patients",
+      "description": "patientType == NEW"
+    },
+    {
+      "name": "not_cancelled",
+      "description": "status != PATIENT_CANCELLED (SYNC_CONFIRMED still processes)"
+    }
+  ],
+  "gates": [
+    {
+      "name": "already_processed",
+      "service": "genies-bottle",
+      "description": "Skip patient if completed execution exists for correlation_id (unless --force; force still honors step_done)"
+    },
+    {
+      "name": "already_contacted",
+      "service": "weave",
+      "description": "Skip SMS if Genie $100 / welcome template fingerprint already present (honored even with --force)"
+    },
+    {
+      "name": "portal_already_active",
+      "service": "ema",
+      "description": "Skip portal activate if EMA patient.username already set"
+    },
+    {
+      "name": "call_already_requested",
+      "service": "zocdoc",
+      "description": "Skip call-request if patient.requestedToCallTimestamp set or step_done(call)"
+    }
+  ],
+  "steps": [
+    {
+      "order": 1,
+      "name": "get_booking_details",
+      "service": "zocdoc",
+      "description": "Pull appointment + requestId + PHI needed for side effects; report GB running",
+      "report_action_label": "Pulled appointment from ZocDoc",
+      "step_aliases": ["get_booking_details", "pull", "init"],
+      "activity_action": null,
+      "inputs": {
+        "required": ["appointmentId"],
+        "from_list": ["patientType", "bookingTimeUtc", "status"]
+      },
+      "outputs": {
+        "required": ["requestId", "correlation_id", "mrn_or_patient_key"],
+        "optional": ["phone", "email", "ema_patient_id", "first_name", "appt_date"]
+      },
+      "side_effects": ["gb.report_process status=running"],
+      "idempotent": true,
+      "on_failure": {
+        "class": "retryable",
+        "execution_status": "failed",
+        "retry": "next cron / manual re-run same correlation_id",
+        "dead_letter_when": "auth permanently broken after N operator attempts"
+      }
+    },
+    {
+      "order": 2,
+      "name": "send_call_request",
+      "service": "zocdoc",
+      "description": "Zocdoc 'call the office' request — $100 fee avoidance within 24h of booking",
+      "report_action_label": "Sent call office request on ZocDoc",
+      "step_aliases": ["send_call_request", "call", "call_request"],
+      "activity_action": "zocdoc_call_request",
+      "note": "$100 fee gate — must succeed or skip-as-already before portal/SMS",
+      "inputs": {
+        "required": ["requestId (numeric, not appointmentId string)"]
+      },
+      "outputs": {
+        "optional": ["checkpoint metadata.after_call_request"]
+      },
+      "side_effects": [
+        "zocdoc send_call_request",
+        "StepLedger write",
+        "gb.report_process running checkpoint BEFORE portal/SMS"
+      ],
+      "idempotent": true,
+      "critical": true,
+      "on_failure": {
+        "class": "retryable_until_window_missed",
+        "execution_status": "failed",
+        "retry": "re-run; do not proceed to portal/SMS until done/skipped",
+        "dead_letter_when": "booking >24h old and fee already charged / request impossible; or permanent missing requestId after chart review",
+        "next_action": "check Zocdoc requestId / Kernel auth; do not force-retry until ledger/GB shows step 2 done"
+      }
+    },
+    {
+      "order": 3,
+      "name": "activate_portal",
+      "service": "ema",
+      "description": "EMA portal activate / portal email; omit cellPhone (500 if included)",
+      "report_action_label": "Activated patient portal in ModMed",
+      "step_aliases": ["activate_portal", "portal", "send_portal", "ema_portal"],
+      "activity_action": "ema_portal",
+      "inputs": {
+        "required_for_send": ["ema_patient_id", "email"],
+        "omit": ["cellPhone"]
+      },
+      "outputs": {},
+      "side_effects": ["ema.send_portal_email"],
+      "idempotent": true,
+      "critical": false,
+      "on_failure": {
+        "class": "non_fatal_continue",
+        "execution_status": "keep running (job continues to SMS)",
+        "retry": "next re-entry if still not username-set",
+        "dead_letter_when": "never alone — does not block completion if call+SMS ok",
+        "note": "Portal failure is recorded as step failed/skipped but does not fail the whole job if call_request + SMS succeed"
+      }
+    },
+    {
+      "order": 4,
+      "name": "send_welcome_sms",
+      "service": "weave",
+      "description": "Template-only welcome SMS (Genie - New Zocdoc Patient); correlation_id in relatedIds only",
+      "report_action_label": "Sent Genie SMS via Weave",
+      "step_aliases": ["send_welcome_sms", "sms", "welcome", "weave", "send_welcome"],
+      "activity_action": "weave_sms",
+      "template_id": "00914ffc-ae68-49c8-a76d-a0d78a5d5d21",
+      "template_name": "Genie - New Zocdoc Patient",
+      "allowed_vars": ["FIRST_NAME"],
+      "inputs": {
+        "required": ["phone", "first_name for template"],
+        "forbidden_in_body": ["correlation_id", "mrn", "full PHI dumps"]
+      },
+      "outputs": {
+        "metadata.weave": ["smsId", "threadId", "personId"]
+      },
+      "side_effects": ["weave.send_message", "StepLedger", "gb checkpoint with weave ids"],
+      "idempotent": true,
+      "critical": true,
+      "on_failure": {
+        "class": "retryable",
+        "execution_status": "failed",
+        "retry": "re-run; fingerprint + step_done block double-SMS",
+        "dead_letter_when": "no phone on booking after operator chart fix attempts exhausted",
+        "next_action": "check Weave auth / phone; do not resend until ledger step 4 done or fingerprint present"
+      }
+    },
+    {
+      "order": 5,
+      "name": "report_completed",
+      "service": "genies-bottle",
+      "description": "Final report_process completed (or failed/dead_letter) with full steps blob",
+      "report_action_label": "Report execution terminal status",
+      "step_aliases": ["report_completed", "complete"],
+      "activity_action": "zocdoc_new_patient_processed",
+      "inputs": {
+        "required": ["correlation_id", "merged steps", "call_ok", "sms_ok"]
+      },
+      "outputs": {
+        "execution.status": "completed | failed | dead_letter | needs_review"
+      },
+      "side_effects": ["gb.report_process", "ledger terminal status", "activity log"],
+      "idempotent": true,
+      "on_failure": {
+        "class": "retryable_report_only",
+        "execution_status": "may leave running if GB write fails after side effects",
+        "retry": "re-run; side effects skipped via step_done → re-report completed",
+        "dead_letter_when": "n/a for report write alone"
+      }
+    }
+  ],
+  "hooks": [
+    {
+      "name": "messaging_inbound",
+      "status": "hook_only",
+      "phase": "later",
+      "service": "weave",
+      "description": "Attach inbound SMS/thread events to the NP execution for ops visibility (not implemented in zocdoc-new-booking job).",
+      "correlation": {
+        "root": "same zocdoc-{appointmentId}",
+        "match_order": [
+          "Weave relatedIds contains correlation_id",
+          "metadata.weave.threadId / personId on execution",
+          "phone_last4 + time window (weak; ops only)"
+        ]
+      },
+      "contract": {
+        "trigger": "inbound Weave message on thread linked to NP SMS",
+        "job_action": "append step or activity only — do not re-run fee/SMS path",
+        "report": {
+          "preferred": "log_activity action=weave_inbound_correlated payload={correlation_id, threadId, direction:inbound, status}",
+          "optional_step": {
+            "name": "messaging_inbound_observed",
+            "status": "done",
+            "detail": "inbound reply observed (no body in GB)"
+          }
+        },
+        "inputs": {
+          "allowed_in_gb": ["correlation_id", "threadId", "smsId", "direction", "observed_at"],
+          "forbidden_in_gb": ["message body", "full phone", "attachments"]
+        },
+        "outputs": {
+          "execution.metadata.messaging": {
+            "last_inbound_at": "ISO-8601",
+            "inbound_count": "int"
+          }
+        },
+        "failure": {
+          "unmatched_inbound": "no execution update; optional needs_review queue outside this flow",
+          "retry": "idempotent activity by (correlation_id, smsId)"
+        }
+      },
+      "non_goals": [
+        "Full messaging worker / auto-reply engine in this definition",
+        "Storing SMS body in Bottle"
+      ]
+    },
+    {
+      "name": "calls_outbound",
+      "status": "hook_only",
+      "phase": "later",
+      "service": "weave",
+      "description": "Correlate outbound Weave/Genie calls (FD follow-up) to the NP booking execution.",
+      "correlation": {
+        "root": "same zocdoc-{appointmentId}",
+        "match_order": [
+          "Caller passes correlation_id into dial metadata / GB activity",
+          "metadata.weave.personId + dial E.164 last4",
+          "manual ops link"
+        ]
+      },
+      "contract": {
+        "trigger": "outbound dial related to NP onboarding (card-on-file / confirm)",
+        "job_action": "record outcome on same execution; never send_call_request again",
+        "report": {
+          "preferred": "log_activity action=weave_call_outbound payload={correlation_id, call_record_id, disposition, status}",
+          "optional_step": {
+            "name": "calls_outbound_observed",
+            "status": "done|failed|skipped",
+            "detail": "disposition only — no recording URL with PHI in public UI"
+          }
+        },
+        "inputs": {
+          "allowed_in_gb": [
+            "correlation_id",
+            "call_record_id",
+            "direction=outbound",
+            "disposition",
+            "duration_sec",
+            "observed_at"
+          ],
+          "forbidden_in_gb": ["recording bytes", "full transcript with PHI", "full phone"]
+        },
+        "outputs": {
+          "execution.metadata.calls": {
+            "last_outbound_at": "ISO-8601",
+            "last_disposition": "string"
+          }
+        },
+        "failure": {
+          "dial_failed": "activity failed; execution stays completed if NP path done",
+          "retry": "new dial attempt; new activity row; bump metadata only"
+        }
+      },
+      "non_goals": [
+        "Bottle as SIP/dial orchestrator",
+        "Replacing voice_agent runtime"
+      ]
+    },
+    {
+      "name": "calls_inbound",
+      "status": "hook_only",
+      "phase": "later",
+      "service": "weave",
+      "description": "Correlate inbound patient calls (post call-the-office request) to the NP execution.",
+      "correlation": {
+        "root": "same zocdoc-{appointmentId}",
+        "match_order": [
+          "Caller-ID last10 vs booking phone_last4 + open NP executions",
+          "Front-desk / agent supplies correlation_id",
+          "Zocdoc call-request window (bookingTime + 24h) as soft filter"
+        ]
+      },
+      "contract": {
+        "trigger": "inbound call answered/missed while NP execution open or recently completed",
+        "job_action": "observe only; fee path already handled by send_call_request step",
+        "report": {
+          "preferred": "log_activity action=weave_call_inbound payload={correlation_id, call_record_id, disposition, status}",
+          "optional_step": {
+            "name": "calls_inbound_observed",
+            "status": "done|missed|failed",
+            "detail": "disposition only"
+          }
+        },
+        "inputs": {
+          "allowed_in_gb": [
+            "correlation_id",
+            "call_record_id",
+            "direction=inbound",
+            "disposition",
+            "duration_sec",
+            "observed_at"
+          ],
+          "forbidden_in_gb": ["full transcript PHI dump", "recording in public payload"]
+        },
+        "outputs": {
+          "execution.metadata.calls": {
+            "last_inbound_at": "ISO-8601",
+            "last_inbound_disposition": "string"
+          }
+        },
+        "failure": {
+          "unmatched_inbound": "no auto-link; do not invent correlation_id",
+          "retry": "idempotent by call_record_id"
+        }
+      },
+      "non_goals": [
+        "Auto-cancel Zocdoc booking from call disposition without human/policy job",
+        "Storing call audio in Bottle"
+      ]
+    }
+  ],
+  "failure_matrix": [
+    {
+      "condition": "Zocdoc/EMA/Weave transient auth or 5xx",
+      "step": "any critical",
+      "execution_status": "failed",
+      "operator": "retry",
+      "how": "Re-run job same correlation_id (cron or CLI). step_done skips finished steps."
+    },
+    {
+      "condition": "Missing requestId for call-request",
+      "step": "send_call_request",
+      "execution_status": "failed → dead_letter after chart review if unrecoverable",
+      "operator": "retry then dead_letter",
+      "how": "Fix booking data or mark dead_letter + metadata.dead_letter=true"
+    },
+    {
+      "condition": "Call-request failed; fee window still open",
+      "step": "send_call_request",
+      "execution_status": "failed",
+      "operator": "retry",
+      "how": "Priority retry; do not run portal/SMS until step 2 done/skipped"
+    },
+    {
+      "condition": "Portal activate failed",
+      "step": "activate_portal",
+      "execution_status": "running/completed if SMS ok",
+      "operator": "retry_optional",
+      "how": "Non-fatal; re-entry may retry portal if username still empty"
+    },
+    {
+      "condition": "SMS failed / no phone",
+      "step": "send_welcome_sms",
+      "execution_status": "failed",
+      "operator": "retry then dead_letter if no phone",
+      "how": "Fingerprint + ledger prevent double-SMS on success path"
+    },
+    {
+      "condition": "GB completed gate",
+      "step": "n/a",
+      "execution_status": "completed",
+      "operator": "skip",
+      "how": "--force re-enters but still skips done steps and Weave fingerprint"
+    },
+    {
+      "condition": "Permanent give-up / human-only",
+      "step": "any",
+      "execution_status": "dead_letter (prefer) or failed+metadata.dead_letter=true",
+      "operator": "dead_letter",
+      "how": "Bottle UI filter (t_0c1b4cdc); optional feedback webhook needs_review"
+    },
+    {
+      "condition": "Hook worker cannot match inbound message/call",
+      "step": "hooks.*",
+      "execution_status": "unchanged",
+      "operator": "no_op_or_needs_review_queue",
+      "how": "Do not invent correlation_id; leave unmatched"
+    }
+  ],
+  "retry_policy": {
+    "engine": "job_reentry_not_bottle_orchestrator",
+    "same_correlation_id": true,
+    "metadata": ["retry_count", "last_retry_at"],
+    "cli": "python -m liora_tools run zocdoc-new-booking [--force] [--max-patients=N]",
+    "skips_when": [
+      "step status done or skipped",
+      "Weave template fingerprint present (SMS)",
+      "EMA username set (portal)",
+      "Zocdoc requestedToCallTimestamp set (call)"
+    ]
+  },
+  "staged_mock": {
+    "unit": "pytest tests/test_zocdoc_new_booking.py",
+    "dry_run": "python -m liora_tools run zocdoc-new-booking --dry-run --lookback-minutes=180",
+    "register_flow": "POST /api/webhooks/register-flow {task_slug, flow_definition}",
+    "mock_report": {
+      "running_then_completed": true,
+      "correlation_id_example": "zocdoc-app_STAGED_EXAMPLE",
+      "steps_min": [
+        {"step": 1, "name": "get_booking_details", "action": "Pulled appointment from ZocDoc", "status": "done"},
+        {"step": 2, "name": "send_call_request", "action": "Sent call office request on ZocDoc", "status": "done"},
+        {"step": 3, "name": "activate_portal", "action": "Activated patient portal in ModMed", "status": "skipped", "detail": "already active"},
+        {"step": 4, "name": "send_welcome_sms", "action": "Sent Genie SMS via Weave", "status": "done", "detail": "template_id=00914ffc-ae68-49c8-a76d-a0d78a5d5d21"}
+      ]
+    }
+  },
+  "schedule": {
+    "cron": "*/30 * * * *",
+    "timezone": "America/New_York",
+    "live_gate": "Barric go-live + GENIE_BOTTLE_API_KEY + auth; cron flag default OFF"
+  },
+  "related": {
+    "decision": "docs/DECISION-extend-bottle-vs-thin-flow-t_fb77e5ca.md",
+    "job_ops": "liora-system-apis/discovery/zocdoc-new-booking-job.md",
+    "runbook": "liora-system-apis/discovery/zocdoc-new-patient-processing.md",
+    "cards": ["t_6408ae20", "t_a362499d", "t_fb77e5ca", "t_0c1b4cdc", "t_71b53094", "t_2509bc36"]
+  }
+}

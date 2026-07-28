@@ -4,6 +4,12 @@ Productionized job for the Zocdoc NEW-patient path with Genies Bottle
 `correlation_id` end-to-end. Implements
 [zocdoc-new-patient-processing.md](./zocdoc-new-patient-processing.md).
 
+**Process definition (steps, hooks, retry/DL matrix):**
+[PROCESS-zocdoc-new-booking.md](./PROCESS-zocdoc-new-booking.md) ·
+machine JSON [zocdoc-new-booking.flow.json](./zocdoc-new-booking.flow.json) ·
+job constant `FLOW_DEFINITION` (register-flow payload). Messaging/calls are
+**hooks** only — later workers attach on the same `correlation_id`.
+
 ## Entrypoint
 
 ```bash

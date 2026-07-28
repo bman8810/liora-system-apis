@@ -94,11 +94,27 @@ _STEP_STATUS_RANK = {
     "pending": 1,
 }
 
+# Authoritative process def for register-flow + ops. Human SoT:
+# discovery/PROCESS-zocdoc-new-booking.md + discovery/zocdoc-new-booking.flow.json
+# Bottle seed mirrors this; hooks are contracts only (not executed here).
 FLOW_DEFINITION = {
+    "flow_version": "1.0.0",
+    "task_slug": "zocdoc-new-booking",
+    "correlation": {
+        "field": "correlation_id",
+        "pattern": "zocdoc-{appointmentId}",
+        "fallback": "zocdoc-{mrn}-{appt_date}",
+    },
     "filters": [
-        {"name": "recent_bookings", "description": "bookingTimeUtc within lookback window"},
+        {
+            "name": "recent_bookings",
+            "description": "bookingTimeUtc within lookback window",
+        },
         {"name": "new_patients", "description": "patientType == NEW"},
-        {"name": "not_cancelled", "description": "status != PATIENT_CANCELLED"},
+        {
+            "name": "not_cancelled",
+            "description": "status != PATIENT_CANCELLED",
+        },
     ],
     "gates": [
         {
@@ -111,20 +127,120 @@ FLOW_DEFINITION = {
             "service": "weave",
             "description": "Skip SMS if Genie $100 template fingerprint already present",
         },
+        {
+            "name": "portal_already_active",
+            "service": "ema",
+            "description": "Skip portal activate if EMA patient.username already set",
+        },
+        {
+            "name": "call_already_requested",
+            "service": "zocdoc",
+            "description": "Skip call-request if requestedToCallTimestamp or step_done(call)",
+        },
     ],
     "steps": [
-        {"name": "get_booking_details", "service": "zocdoc"},
-        {"name": "send_call_request", "service": "zocdoc", "note": "$100 fee avoidance"},
-        {"name": "activate_portal", "service": "ema"},
         {
+            "order": 1,
+            "name": "get_booking_details",
+            "service": "zocdoc",
+            "description": "Fetch booking + requestId; report GB running",
+            "step_aliases": ["get_booking_details", "pull", "init"],
+            "report_action_label": "Pulled appointment from ZocDoc",
+        },
+        {
+            "order": 2,
+            "name": "send_call_request",
+            "service": "zocdoc",
+            "description": "Zocdoc call-the-office request ($100 fee gate)",
+            "note": "$100 fee avoidance — checkpoint before portal/SMS",
+            "step_aliases": ["send_call_request", "call", "call_request"],
+            "report_action_label": "Sent call office request on ZocDoc",
+            "critical": True,
+            "on_failure": "retry; dead_letter if requestId permanently missing",
+        },
+        {
+            "order": 3,
+            "name": "activate_portal",
+            "service": "ema",
+            "description": "EMA portal activate; omit cellPhone",
+            "step_aliases": [
+                "activate_portal",
+                "portal",
+                "send_portal",
+                "ema_portal",
+            ],
+            "report_action_label": "Activated patient portal in ModMed",
+            "critical": False,
+            "on_failure": "non_fatal_continue",
+        },
+        {
+            "order": 4,
             "name": "send_welcome_sms",
             "service": "weave",
+            "description": "Template welcome SMS; correlation_id in relatedIds only",
             "template_id": SMS_TEMPLATE_ID,
             "template_name": SMS_TEMPLATE_NAME,
             "allowed_vars": sorted(SMS_ALLOWED_VARS),
+            "step_aliases": [
+                "send_welcome_sms",
+                "sms",
+                "welcome",
+                "weave",
+                "send_welcome",
+            ],
+            "report_action_label": "Sent Genie SMS via Weave",
+            "critical": True,
+            "on_failure": "retry; dead_letter if no phone after ops",
         },
-        {"name": "report_completed", "service": "genies-bottle"},
+        {
+            "order": 5,
+            "name": "report_completed",
+            "service": "genies-bottle",
+            "description": "Terminal report_process (completed|failed|dead_letter)",
+            "step_aliases": ["report_completed", "complete"],
+        },
     ],
+    "hooks": [
+        {
+            "name": "messaging_inbound",
+            "status": "hook_only",
+            "service": "weave",
+            "description": (
+                "Correlate inbound SMS to same correlation_id via relatedIds/"
+                "threadId; activity only — do not re-send welcome SMS"
+            ),
+            "optional_step": "messaging_inbound_observed",
+            "activity_action": "weave_inbound_correlated",
+        },
+        {
+            "name": "calls_outbound",
+            "status": "hook_only",
+            "service": "weave",
+            "description": (
+                "Correlate outbound Weave/Genie dials to NP execution; "
+                "never re-run send_call_request"
+            ),
+            "optional_step": "calls_outbound_observed",
+            "activity_action": "weave_call_outbound",
+        },
+        {
+            "name": "calls_inbound",
+            "status": "hook_only",
+            "service": "weave",
+            "description": (
+                "Correlate inbound patient calls after call-the-office; "
+                "do not invent correlation_id"
+            ),
+            "optional_step": "calls_inbound_observed",
+            "activity_action": "weave_call_inbound",
+        },
+    ],
+    "retry_policy": {
+        "engine": "job_reentry_not_bottle_orchestrator",
+        "same_correlation_id": True,
+        "cli": "python -m liora_tools run zocdoc-new-booking [--force]",
+    },
+    "docs": "discovery/PROCESS-zocdoc-new-booking.md",
 }
 
 # ── PHI-safe helpers ─────────────────────────────────────────────────────────
