@@ -141,6 +141,57 @@ OPS_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["patient_id"],
         },
     },
+    {
+        "type": "function",
+        "name": "transfer_to_staff",
+        "description": (
+            "Warm handoff / hold for human staff. ALWAYS call before saying you are "
+            "connecting them or putting them on hold. Persists structured note "
+            "(reason, patient, callbacks, summary, intents). No SIP dial — returns "
+            "handoff + speak text."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Why the caller needs a human",
+                },
+                "call_summary": {
+                    "type": "string",
+                    "description": "Short summary of the call so far for staff",
+                },
+                "patient_id": {
+                    "type": "integer",
+                    "description": "EMA patient id if already matched",
+                },
+                "callback_numbers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Callback phone numbers",
+                },
+                "callback_windows": {
+                    "description": "Preferred callback window(s) as string or array of strings",
+                },
+                "active_intents": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Active caller intents",
+                },
+                "parked_intents": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Parked/deferred intents",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["transfer", "hold"],
+                    "description": "transfer (default) or hold",
+                },
+            },
+            "required": ["reason", "call_summary"],
+        },
+    },
 ]
 
 
@@ -172,6 +223,26 @@ def _speak_result(
     out = {"status": status, "message": message, "speak": speak if speak is not None else message}
     out.update(extra)
     return _compact_json(out)
+
+
+def _as_str_list(val: Any) -> list[str]:
+    """Normalize optional string-or-array args to a list of non-empty strings."""
+    if val is None:
+        return []
+    if isinstance(val, str):
+        s = val.strip()
+        return [s] if s else []
+    if isinstance(val, (list, tuple)):
+        out: list[str] = []
+        for item in val:
+            if item is None:
+                continue
+            s = str(item).strip()
+            if s:
+                out.append(s)
+        return out
+    s = str(val).strip()
+    return [s] if s else []
 
 
 @lru_cache(maxsize=1)
@@ -627,12 +698,139 @@ def get_insurance_on_file(arguments: dict) -> str:
     )
 
 
+_TRANSFER_SPEAK = (
+    "I'm connecting you with someone on our team who can help with that. "
+    "I've left them a note so you won't need to repeat everything."
+)
+_HOLD_SPEAK = (
+    "I'm going to put you on a brief hold while I get a team member. "
+    "I've written down what you need so they have it."
+)
+
+
+def transfer_to_staff(arguments: dict) -> str:
+    """Warm handoff / hold — always persist structured staff note (no confirmed gate)."""
+    reason = (arguments.get("reason") or "").strip() if arguments.get("reason") is not None else ""
+    call_summary = (
+        (arguments.get("call_summary") or "").strip()
+        if arguments.get("call_summary") is not None
+        else ""
+    )
+
+    if not reason or not call_summary:
+        msg = (
+            "I need a quick reason and a short summary of what you need "
+            "before I connect you — what should I tell the team?"
+        )
+        return _speak_result(
+            status="needs_fields",
+            message=msg,
+            handoff=False,
+        )
+
+    mode_raw = (arguments.get("mode") or "transfer")
+    mode = str(mode_raw).strip().lower() if mode_raw is not None else "transfer"
+    if mode not in ("transfer", "hold"):
+        mode = "transfer"
+
+    patient_id = arguments.get("patient_id")
+    callback_numbers = _as_str_list(arguments.get("callback_numbers"))
+    callback_windows_raw = arguments.get("callback_windows")
+    # Keep string as string, list as list for payload fidelity; normalize empty
+    if callback_windows_raw is None or callback_windows_raw == "":
+        callback_windows: Any = None
+    elif isinstance(callback_windows_raw, str):
+        callback_windows = callback_windows_raw.strip() or None
+    else:
+        callback_windows = _as_str_list(callback_windows_raw) or None
+
+    active_intents = _as_str_list(arguments.get("active_intents"))
+    parked_intents = _as_str_list(arguments.get("parked_intents"))
+
+    warm = _HOLD_SPEAK if mode == "hold" else _TRANSFER_SPEAK
+
+    payload = {
+        "reason": reason,
+        "callback_numbers": callback_numbers,
+        "callback_windows": callback_windows,
+        "active_intents": active_intents,
+        "parked_intents": parked_intents,
+        "mode": mode,
+        "warm_handoff_copy": warm,
+    }
+    extra = {
+        "reason": reason,
+        "call_summary": call_summary,
+        "callback_numbers": callback_numbers,
+        "callback_windows": callback_windows,
+        "active_intents": active_intents,
+        "parked_intents": parked_intents,
+        "mode": mode,
+        "warm_handoff_copy": warm,
+        "status": "queued",
+    }
+
+    try:
+        q = staff_enqueue(
+            "transfer_to_staff",
+            patient_id=patient_id,
+            summary=call_summary,
+            payload=payload,
+            extra=extra,
+        )
+    except OSError as e:
+        logger.exception("staff queue failed for transfer_to_staff")
+        msg = (
+            "I'm having trouble connecting you right now. "
+            "Please stay on the line or call the front desk directly."
+        )
+        return _speak_result(
+            status="queue_error",
+            message=msg,
+            handoff=False,
+            detail=str(e),
+        )
+
+    record = q.get("record") or {}
+    note_id = record.get("id")
+    note_path = q.get("path")
+
+    artifact = {
+        "reason": reason,
+        "patient_id": patient_id,
+        "callback_numbers": callback_numbers,
+        "call_summary": call_summary,
+        "active_intents": active_intents,
+        "parked_intents": parked_intents,
+        "kind": "transfer_to_staff",
+        "schema_version": record.get("schema_version", 1),
+        "id": note_id,
+        "mode": mode,
+        "callback_windows": callback_windows,
+        "status": "queued",
+        "warm_handoff_copy": warm,
+    }
+
+    return _speak_result(
+        status="queued",
+        message="Connecting you with our team.",
+        speak=warm,
+        handoff=True,
+        mode=mode,
+        note_id=note_id,
+        note_path=note_path,
+        artifact=artifact,
+        next_step="speak_warm_handoff_then_hold",
+    )
+
+
 _HANDLERS: dict[str, Callable[[dict], str]] = {
     "triage_lab_results": triage_lab_results,
     "forms_intake_nudge": forms_intake_nudge,
     "flag_running_late": flag_running_late,
     "clinic_faq": clinic_faq,
     "get_insurance_on_file": get_insurance_on_file,
+    "transfer_to_staff": transfer_to_staff,
 }
 
 

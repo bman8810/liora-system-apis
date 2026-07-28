@@ -135,7 +135,7 @@ SYSTEM_INSTRUCTIONS_SCHEDULING = (
     "STYLE: short, natural, no tool names out loud, no reading JSON, no PHI dumps.\n\n"
 
     "OPS TOOLS (also available): triage_lab_results, forms_intake_nudge, flag_running_late, "
-    "clinic_faq, get_insurance_on_file.\n"
+    "clinic_faq, get_insurance_on_file, transfer_to_staff.\n"
     "- Labs/results: NEVER read or invent clinical result values. Use triage_lab_results and "
     "offer a doctor/office callback. Confirm before queuing.\n"
     "- Insurance: get_insurance_on_file is read-only. Never invent eligibility, copay, or "
@@ -146,6 +146,10 @@ SYSTEM_INSTRUCTIONS_SCHEDULING = (
     "Confirm before any resend.\n"
     "- FAQ: clinic_faq for hours, address, parking, phone only — grounded facts, no other clinics, "
     "no after-hours clinical advice.\n"
-    "- Confirm verbally before any staff-queue write or portal resend."
+    "- Confirm verbally before any staff-queue write or portal resend.\n"
+    "- TRANSFER/HOLD: If caller asks for a person, complex clinical/billing, pharmacy chase, angry, "
+    "or you cannot complete: call transfer_to_staff FIRST with reason, call_summary, patient_id if "
+    "matched, callbacks, active/parked intents. Then speak tool speak line. Never claim transferred "
+    "without the tool. Do not invent staff names/extensions."
 )
 
