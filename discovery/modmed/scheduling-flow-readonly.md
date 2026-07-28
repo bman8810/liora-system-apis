@@ -1,7 +1,8 @@
-# Read-only EMA scheduling flow
+# EMA scheduling flow (voice P0)
 
-Runbook for Genie agents: validate patient → list upcoming appointments → find open slots.
-**Writes are hard-gated** unless `EMA_WRITES_ENABLED=true`.
+Runbook for Genie agents: validate patient → upcoming/past → slots → gated book/reschedule/cancel.
+
+**Writes are hard-gated** unless `EMA_WRITES_ENABLED=true` **and** voice tools pass `confirmed=true` after verbal yes.
 
 ## Live auth (Kernel Liora)
 
@@ -24,10 +25,14 @@ Default API host is **`https://lioraderm.modmedapp.com`** (not bare `.ema.md`).
 ## Flow steps
 
 1. **Validate patient** — name / DOB / phone / MRN. Statuses: `matched` | `none` | `ambiguous` | `inactive`.
-   Missing `patientStatus` is treated as schedulable (EMA often omits it).
-2. **Upcoming appointments** — open statuses only.
-3. **Open slots** — optional `appt_type_id`.
-4. **Combined lookup** — `next_actions` for the agent.
+   - Phone match uses last 10 digits.
+   - Missing `patientStatus` is treated as schedulable.
+   - When multiple hits, drop TEST / PHREESIA / TRAINING / GALATIQ / ZZTEST / DUMMY / FAKE charts.
+2. **Upcoming appointments** — open statuses only; each item has `speak_as` / `local_time` (America/New_York).
+3. **Past appointments** — recent history; excludes CANCELLED/CANCELED by default; `latest` shortcut.
+4. **Open slots** — round-robin providers, then rank **non-zzz → Rhee first → start**.
+5. **Book / reschedule / cancel** — require `confirmed=True` then `EMA_WRITES_ENABLED`.
+6. **Combined lookup** — `next_actions` for the agent (reads only).
 
 ## HTTP
 
@@ -58,15 +63,29 @@ python -m liora_tools ema visit-types
 | `AI_BACKEND` | `grok` |
 | `GROK_VOICE_MODEL` | `grok-voice-latest` |
 | `EMA_WRITES_ENABLED` | off |
+| `OUTBOUND_DIAL_PHONE` | set by CallManager from dialed number or inbound ANI |
 
-Tools registered on `session.update`: `lookup_patient`, `list_upcoming_appointments`, `list_visit_types`, `find_open_slots`, `schedule_lookup`.  
-Handler: `voice_agent/ema_tools.py` → `SchedulingFlow`. Function events: `response.function_call_arguments.done` → `function_call_output` → debounced `response.create`.
+Tools on `session.update`:
+
+- Reads: `lookup_patient`, `list_upcoming_appointments`, `list_past_appointments`, `list_visit_types`, `find_open_slots`, `schedule_lookup`
+- Gated writes: `book_appointment`, `reschedule_appointment`, `cancel_appointment` (`confirmed` required)
+
+Handler: `voice_agent/ema_tools.py` → `SchedulingFlow`.  
+Identity: outbound phone+DOB; inbound ANI+DOB.  
+Timezone: **speak `speak_as` only** (never model-convert UTC).  
+Reschedule fallback policy: cancel-then-book with **two** verbal confirms.
 
 ## Write gate
 
-Unset / false blocks: portal email, create, update, reschedule, cancel.
+Unset / false blocks: portal email, create, update, reschedule, cancel, and voice write tools (returns `writes_disabled` / `needs_confirmation`).
 
-## Next
+## Tests
 
-- Live phone smoke with tools mid-call
-- Unlock writes only with explicit product OK
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_scheduling_flow.py -q
+```
+
+## Safety
+
+- Smoke dials: allowlisted E.164 only (Barric smoke + Twilio sink C + manual staff).
+- No live patient writes until Barric greenlight + `EMA_WRITES_ENABLED=true`.
