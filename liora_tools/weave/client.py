@@ -169,6 +169,31 @@ class WeaveClient:
     def get_person(self, person_id: str) -> dict:
         return self._get(f"/persons/v3/persons/{person_id}")
 
+    # -- Payments (read-only GET) --
+
+    def search_invoices(
+        self,
+        *,
+        person_id: str = None,
+        limit: int = 25,
+        skip: int = 0,
+        status: str = None,
+        active: str = None,
+    ) -> dict:
+        """GET /payments/v1/search/invoices — search only; never creates invoices."""
+        params = {
+            "locationIds": self._cfg.location_id,
+            "limit": str(limit),
+            "skip": str(skip),
+        }
+        if person_id:
+            params["personid"] = str(person_id)
+        if status is not None:
+            params["status"] = status
+        if active is not None:
+            params["active"] = active
+        return self._get("/payments/v1/search/invoices", params)
+
     # -- Call Records --
 
     def list_call_records(self, page_size: int = 25) -> dict:

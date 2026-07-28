@@ -296,16 +296,29 @@ Main only calls `report_failure` for exceptions raised outside that path
 (e.g. before steps started). Scan-level list failures open high-priority
 feedback without patient PHI.
 
-## Cron (separate task)
+## Cron (Hermes — go-live gated)
 
-Schedule every 30 minutes is **not** installed by this change — see kanban
-child **Add 30m cron for zocdoc-new-booking job**. Suggested:
+SoT: **[zocdoc-cron-schedule.md](./zocdoc-cron-schedule.md)** · kanban `t_fa0580f2`.
 
-```text
-*/30 * * * *  cd …/liora-system-apis && .venv/bin/python -m liora_tools run zocdoc-new-booking >>logs/zocdoc-new-booking.log 2>&1
+| | |
+|--|--|
+| Schedule | `*/30 * * * *` via Hermes `no_agent` job `liora-zocdoc-new-booking` (`846f536e3dbd`) |
+| Script | `/opt/data/scripts/zocdoc-new-booking-cron.sh` |
+| Lookback | 90m (covers a missed 30m tick) |
+| Overlap | Job file lock (`~/.liora/locks/zocdoc-new-booking.lock`) |
+| Default | **DISABLED** — enable flag `0` + job paused until Barric go-live |
+
+```bash
+# Disable (immediate)
+printf '0\n' > /opt/data/cron/state/zocdoc-new-booking.enabled
+hermes cron pause 846f536e3dbd   # name liora-zocdoc-new-booking
+
+# Enable (Barric OK + GENIE_BOTTLE_API_KEY + healthy Zocdoc Kernel auth only)
+printf '1\n' > /opt/data/cron/state/zocdoc-new-booking.enabled
+hermes cron resume 846f536e3dbd
 ```
 
-Lock prevents overlap if a run exceeds 30m.
+Do **not** re-enable genie HEARTBEAT Zocdoc monitor.
 
 ## SMS template (template-first only)
 

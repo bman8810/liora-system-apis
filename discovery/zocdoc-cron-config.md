@@ -1,10 +1,14 @@
-# Zocdoc New Patient Processing — Cron Config
+# Zocdoc New Patient Processing — Cron Config (legacy)
 
-**Schedule**: `*/30 * * * *` (every 30 minutes)
-**Recurring**: true
-**Auto-expires**: 3 days (session-only)
+> **Superseded (2026-07-28).** Production schedule lives on **Hermes**  
+> `no_agent` script — see **[zocdoc-cron-schedule.md](./zocdoc-cron-schedule.md)**.  
+> Do not recreate Claude `/loop 30m` or re-enable genie HEARTBEAT Zocdoc monitor.
 
-## Prompt
+**Schedule**: `*/30 * * * *` (every 30 minutes)  
+**Recurring**: true  
+**Current host**: Hermes cron `liora-zocdoc-new-booking` id `846f536e3dbd` (paused + enable flag off by default)
+
+## Prompt (historical — OpenClaw / Claude loop)
 
 Process new Zocdoc patients. GENIE_BOTTLE_API_KEY is in the cwd .env file. Full runbook: discovery/zocdoc-new-patient-processing.md
 

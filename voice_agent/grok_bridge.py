@@ -110,13 +110,19 @@ class GrokBridge(AIBridge):
         }
 
         if self.enable_ema_tools:
+            from .billing_tools import BILLING_TOOL_DEFINITIONS
             from .ema_tools import EMA_TOOL_DEFINITIONS
             from .ops_tools import OPS_TOOL_DEFINITIONS
-            session["tools"] = list(EMA_TOOL_DEFINITIONS) + list(OPS_TOOL_DEFINITIONS)
+            session["tools"] = (
+                list(EMA_TOOL_DEFINITIONS)
+                + list(OPS_TOOL_DEFINITIONS)
+                + list(BILLING_TOOL_DEFINITIONS)
+            )
             logger.info(
-                "EMA + ops tools enabled (%d ema, %d ops)",
+                "EMA + ops + billing tools enabled (%d ema, %d ops, %d billing)",
                 len(EMA_TOOL_DEFINITIONS),
                 len(OPS_TOOL_DEFINITIONS),
+                len(BILLING_TOOL_DEFINITIONS),
             )
 
         session_config = {
@@ -191,6 +197,7 @@ class GrokBridge(AIBridge):
 
     async def _handle_function_call(self, event: dict):
         """Execute client-side function tool and return output to Grok."""
+        from .billing_tools import BILLING_TOOL_NAMES, handle_billing_tool
         from .ema_tools import handle_ema_tool
         from .ops_tools import OPS_TOOL_NAMES, handle_ops_tool
 
@@ -205,7 +212,9 @@ class GrokBridge(AIBridge):
         logger.info("Grok function call: %s call_id=%s args_keys=%s", name, call_id, list(arguments.keys()))
 
         # Run blocking tool I/O off the event loop
-        if name in OPS_TOOL_NAMES:
+        if name in BILLING_TOOL_NAMES:
+            output = await asyncio.to_thread(handle_billing_tool, name, arguments)
+        elif name in OPS_TOOL_NAMES:
             output = await asyncio.to_thread(handle_ops_tool, name, arguments)
         else:
             output = await asyncio.to_thread(handle_ema_tool, name, arguments)
