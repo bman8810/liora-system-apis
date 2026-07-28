@@ -86,11 +86,14 @@ class GrokBridge(AIBridge):
         )
         logger.info("Grok WebSocket connected")
 
-    async def configure_session(self, patient_name: str = "the patient"):
+    async def configure_session(
+        self, patient_name: str = "the patient", dial_phone: str = ""
+    ):
         """Send session.update to configure voice, audio format, tools, instructions."""
         if self.enable_ema_tools:
             instructions = config.SYSTEM_INSTRUCTIONS_SCHEDULING.format(
-                patient_name=patient_name
+                patient_name=patient_name,
+                dial_phone=dial_phone or "the number on this call",
             )
         else:
             instructions = config.SYSTEM_INSTRUCTIONS.format(patient_name=patient_name)
@@ -112,7 +115,9 @@ class GrokBridge(AIBridge):
         if self.enable_ema_tools:
             from .ema_tools import EMA_TOOL_DEFINITIONS
             session["tools"] = EMA_TOOL_DEFINITIONS
-            logger.info("EMA read-only tools enabled (%d tools)", len(EMA_TOOL_DEFINITIONS))
+            logger.info(
+                "EMA scheduling tools enabled (%d tools)", len(EMA_TOOL_DEFINITIONS)
+            )
 
         session_config = {
             "type": "session.update",

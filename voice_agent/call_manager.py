@@ -128,10 +128,26 @@ class CallManager:
 
             # Phase 6: Connect to AI backend
             logger.info(f"=== Phase 6: AI Backend ({config.AI_BACKEND}) ===")
-            # Look up patient name from destination number
-            dest_digits = self.destination.lstrip("+1")
+            import os
+            import re
+
+            def _ten_digits(raw: str) -> str:
+                d = "".join(c for c in str(raw or "") if c.isdigit())
+                if len(d) >= 11 and d.startswith("1"):
+                    d = d[1:]
+                return d[-10:] if len(d) >= 10 else d
+
+            # Outbound: dialed number. Inbound: ANI from INVITE From when possible.
+            dest_digits = _ten_digits(self.destination)
+            if not dest_digits and invite is not None:
+                from_hdr = getattr(invite, "from_header", None) or ""
+                m = re.search(r"(\+?1?\d{10,11})", str(from_hdr))
+                if m:
+                    dest_digits = _ten_digits(m.group(1))
             patient_name = config.PATIENT_NAMES.get(dest_digits, "the patient")
-            logger.info(f"Patient: {patient_name}")
+            if dest_digits:
+                os.environ["OUTBOUND_DIAL_PHONE"] = dest_digits
+            logger.info("Patient hint=%s dial_phone=%s", patient_name, dest_digits or "(none)")
 
             if config.AI_BACKEND == "elevenlabs":
                 from .elevenlabs_bridge import ElevenLabsBridge
@@ -141,7 +157,10 @@ class CallManager:
                 self.bridge = GrokBridge()
 
             await self.bridge.connect()
-            await self.bridge.configure_session(patient_name=patient_name)
+            await self.bridge.configure_session(
+                patient_name=patient_name,
+                dial_phone=dest_digits,
+            )
 
             # Start AI message loop in background
             bridge_task = asyncio.create_task(self.bridge.run())
@@ -153,15 +172,31 @@ class CallManager:
                 logger.warning("AI session not ready in 10s, proceeding anyway")
 
             # Phase 7: Start audio pipeline
-            logger.info("=== Phase 7: Audio Pipeline ===")
+            # direction: outbound = we dialed (wait for them); inbound = we answered (greet now)
+            direction = "outbound" if self.destination else "inbound"
+            logger.info("=== Phase 7: Audio Pipeline (direction=%s) ===", direction)
             logger.info("AI session ready + media established — starting audio pipeline")
-            self.pipeline = AudioPipeline(self.media, self.bridge)
+            try:
+                self.pipeline = AudioPipeline(
+                    self.media, self.bridge, direction=direction
+                )
+            except TypeError:
+                # Older AudioPipeline without direction kwarg
+                self.pipeline = AudioPipeline(self.media, self.bridge)
             await self.pipeline.start()
             logger.info("Audio pipeline active — call is live!")
 
-            # Wait for call to end
+            # Wait for call to end (lab: optional duration cap)
+            max_s = float(os.environ.get("VOICE_AGENT_MAX_CALL_SECONDS", "0") or 0)
             logger.info("=== Call Active — waiting for BYE ===")
-            await self._call_ended.wait()
+            if max_s > 0:
+                try:
+                    await asyncio.wait_for(self._call_ended.wait(), timeout=max_s)
+                except asyncio.TimeoutError:
+                    logger.info("Call max duration reached (%.0fs) — ending", max_s)
+                    self._call_ended.set()
+            else:
+                await self._call_ended.wait()
             logger.info("Call ended")
 
             # Cleanup

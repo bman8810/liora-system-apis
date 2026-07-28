@@ -1,6 +1,7 @@
-"""Read-only EMA scheduling tools for Grok Realtime voice agent.
+"""EMA scheduling tools for Grok Realtime voice agent.
 
-Writes are never exposed here. Mutations stay behind EMA_WRITES_ENABLED on EmaClient.
+Reads always available. Mutations (book/reschedule/cancel) require verbal
+confirmed=true AND EMA_WRITES_ENABLED on the server (default off).
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "list_upcoming_appointments",
         "description": (
             "List upcoming open appointments for a validated patient_id "
-            "(from lookup_patient). Speaks times in America/New_York context."
+            "(from lookup_patient). Each item has speak_as and local_time in Eastern — read speak_as aloud, never UTC."
         ),
         "parameters": {
             "type": "object",
@@ -65,6 +66,24 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "list_past_appointments",
+        "description": (
+            "List recent PAST appointments for patient_id (most recent first). "
+            "Use for last visit / history. Default excludes cancelled. READ ONLY."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "patient_id": {"type": "integer"},
+                "days_back": {"type": "integer"},
+                "limit": {"type": "integer"},
+                "include_cancelled": {"type": "boolean"},
+            },
+            "required": ["patient_id"],
+        },
+    },
+    {
+        "type": "function",
         "name": "list_visit_types",
         "description": (
             "List bookable visit / appointment types (id, name, default duration). "
@@ -77,7 +96,7 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "find_open_slots",
         "description": (
             "Find open appointment slots for a visit type. "
-            "Offer only 2–3 options to the caller. READ ONLY — does not book."
+            "Offer only 2-3 options. Read each slot speak_as (Eastern). READ ONLY — does not book."
         ),
         "parameters": {
             "type": "object",
@@ -108,11 +127,84 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "book_appointment",
+        "description": (
+            "Book a NEW appointment after patient is validated and a slot was chosen from find_open_slots. "
+            "MUST get clear verbal confirmation first, then call with confirmed=true. "
+            "Requires EMA_WRITES_ENABLED on the server. Do not invent provider/facility/type ids — use tool results."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "patient_id": {"type": "integer"},
+                "provider_id": {"type": "integer"},
+                "facility_id": {"type": "integer"},
+                "appointment_type_id": {"type": "integer"},
+                "scheduled_start": {
+                    "type": "string",
+                    "description": "ISO UTC start from find_open_slots, e.g. 2026-08-01T14:00:00.000Z",
+                },
+                "duration": {"type": "integer"},
+                "notes": {"type": "string"},
+                "new_patient": {"type": "boolean"},
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "true only after caller clearly agrees to this exact slot",
+                },
+            },
+            "required": [
+                "patient_id",
+                "provider_id",
+                "facility_id",
+                "appointment_type_id",
+                "scheduled_start",
+                "confirmed",
+            ],
+        },
+    },
+    {
+        "type": "function",
+        "name": "reschedule_appointment",
+        "description": (
+            "Move an existing upcoming appointment to a new start time. "
+            "Verbal confirm required (confirmed=true). Uses EMA reschedule API."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "appointment_id": {"type": "integer"},
+                "new_start": {"type": "string", "description": "ISO UTC new start"},
+                "new_duration": {"type": "integer"},
+                "provider_id": {"type": "integer"},
+                "reason": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["appointment_id", "new_start", "confirmed"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "cancel_appointment",
+        "description": (
+            "Cancel an upcoming appointment after clear verbal confirmation (confirmed=true)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "appointment_id": {"type": "integer"},
+                "reason": {"type": "string"},
+                "notes": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["appointment_id", "confirmed"],
+        },
+    },
+    {
+        "type": "function",
         "name": "schedule_lookup",
         "description": (
-            "One-shot read-only flow: validate patient, list upcoming appts, "
-            "and optionally find open slots. Prefer this when the caller wants "
-            "to check or move a visit. Does NOT book, reschedule, or cancel."
+            "One-shot patient validate + upcoming + optional open slots. "
+            "Does not write. For book/reschedule/cancel use dedicated tools after confirm."
         ),
         "parameters": {
             "type": "object",
@@ -156,8 +248,17 @@ def _compact_json(data: Any) -> str:
     return json.dumps(data, default=str, separators=(",", ":"))
 
 
+def _with_outbound_phone(arguments: dict) -> dict:
+    args = dict(arguments or {})
+    if not args.get("phone"):
+        dial = (os.environ.get("OUTBOUND_DIAL_PHONE") or "").strip()
+        if dial:
+            args["phone"] = dial
+    return args
+
+
 def handle_ema_tool(name: str, arguments: dict) -> str:
-    """Execute a read-only EMA tool; return JSON string for Grok."""
+    """Execute EMA voice tool (read + gated writes); return JSON string for Grok."""
     try:
         flow = _get_flow()
     except Exception as e:
@@ -172,6 +273,7 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
 
     try:
         if name == "lookup_patient":
+            arguments = _with_outbound_phone(arguments)
             result = flow.validate_patient(
                 last_name=arguments.get("last_name"),
                 first_name=arguments.get("first_name"),
@@ -186,6 +288,16 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
             result = flow.list_upcoming_appointments(
                 pid,
                 days_ahead=int(arguments.get("days_ahead") or 90),
+            )
+        elif name == "list_past_appointments":
+            pid = arguments.get("patient_id")
+            if pid is None:
+                return _compact_json({"error": "patient_id_required"})
+            result = flow.list_past_appointments(
+                pid,
+                days_back=int(arguments.get("days_back") or 365),
+                limit=int(arguments.get("limit") or 5),
+                include_cancelled=bool(arguments.get("include_cancelled") or False),
             )
         elif name == "list_visit_types":
             types = flow.list_visit_types()
@@ -203,6 +315,7 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
                 limit=int(arguments.get("limit") or 5),
             )
         elif name == "schedule_lookup":
+            arguments = _with_outbound_phone(arguments)
             result = flow.lookup(
                 last_name=arguments.get("last_name"),
                 first_name=arguments.get("first_name"),
@@ -215,14 +328,65 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
                 time_of_day=arguments.get("time_of_day") or "ANYTIME",
                 slot_limit=int(arguments.get("slot_limit") or 5),
             )
+        elif name == "book_appointment":
+            if not arguments.get("confirmed"):
+                result = {
+                    "status": "needs_confirmation",
+                    "message": "Repeat the proposed day/time and ask them to confirm before booking.",
+                    "writes_enabled": __import__("liora_tools.modmed.write_gate", fromlist=["ema_writes_enabled"]).ema_writes_enabled(),
+                }
+            else:
+                result = flow.book_appointment(
+                    patient_id=arguments.get("patient_id"),
+                    provider_id=arguments.get("provider_id"),
+                    facility_id=arguments.get("facility_id"),
+                    appointment_type_id=arguments.get("appointment_type_id"),
+                    scheduled_start=arguments.get("scheduled_start"),
+                    duration=int(arguments.get("duration") or 15),
+                    notes=arguments.get("notes") or "Booked via Liora voice",
+                    new_patient=bool(arguments.get("new_patient") or False),
+                    confirmed=True,
+                )
+        elif name == "reschedule_appointment":
+            result = flow.reschedule_appointment(
+                appointment_id=arguments.get("appointment_id"),
+                new_start=arguments.get("new_start"),
+                new_duration=arguments.get("new_duration"),
+                provider_id=arguments.get("provider_id"),
+                reason=arguments.get("reason") or "PATIENT_RESCHEDULE",
+                confirmed=bool(arguments.get("confirmed")),
+            )
+        elif name == "cancel_appointment":
+            result = flow.cancel_appointment(
+                appointment_id=arguments.get("appointment_id"),
+                reason=arguments.get("reason") or "PATIENT_CANCELLED",
+                notes=arguments.get("notes") or "Cancelled via Liora voice",
+                confirmed=bool(arguments.get("confirmed")),
+            )
         else:
             return _compact_json({"error": "unknown_tool", "name": name})
 
-        # Never claim write capability
         if isinstance(result, dict):
-            result = {**result, "writes_enabled": False, "booking_available": False}
+            from liora_tools.modmed.write_gate import ema_writes_enabled
+            we = ema_writes_enabled()
+            # Preserve explicit keys from write helpers; default read tools stay non-booking
+            if "writes_enabled" not in result:
+                result = {**result, "writes_enabled": we}
+            if "booking_available" not in result:
+                result = {**result, "booking_available": we}
         return _compact_json(result)
     except Exception as e:
+        from liora_tools.exceptions import WriteGatedError
+        if isinstance(e, WriteGatedError):
+            return _compact_json({
+                "status": "writes_disabled",
+                "error": "writes_disabled",
+                "tool": name,
+                "detail": str(e),
+                "writes_enabled": False,
+                "booking_available": False,
+                "message": "Scheduling changes are not enabled right now; offer staff callback.",
+            })
         logger.exception("EMA tool %s failed", name)
         return _compact_json({"error": "ema_tool_failed", "tool": name, "detail": str(e)})
 
