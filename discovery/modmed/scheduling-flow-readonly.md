@@ -62,6 +62,22 @@ python -m liora_tools ema visit-types
 Tools registered on `session.update`: `lookup_patient`, `list_upcoming_appointments`, `list_visit_types`, `find_open_slots`, `schedule_lookup`.  
 Handler: `voice_agent/ema_tools.py` → `SchedulingFlow`. Function events: `response.function_call_arguments.done` → `function_call_output` → debounced `response.create`.
 
+## Timezone / `speak_as` (required for speech)
+
+Practice display timezone is always **America/New_York**. Scheduling rows and slots include:
+
+| Field | Use |
+|-------|-----|
+| `speak_as` | **Only** string Genie should say aloud (e.g. `Tuesday, July 28 at 2:10 PM Eastern`) |
+| `local_time` / `local_date` / `local_weekday` | Structured Eastern parts |
+| `start` / `start_utc` | Machine ids for tools / EMA — **never** read aloud |
+| `timezone` / `speak_hint` | Response-level reminder |
+
+Helpers: `_to_ny_fields` / `_appt_summary` in `liora_tools/modmed/scheduling_flow.py`.  
+DST-safe via `zoneinfo` (`18:10Z` July → **2:10 PM** Eastern, not 7 PM).  
+Prompt contract: `SYSTEM_INSTRUCTIONS_SCHEDULING` TIMEZONE RULE.  
+Future book/cancel/reschedule/past responses must also run through `_appt_summary` so speech stays Eastern-only.
+
 ## Write gate
 
 Unset / false blocks: portal email, create, update, reschedule, cancel.

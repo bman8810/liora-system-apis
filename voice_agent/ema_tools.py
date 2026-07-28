@@ -46,7 +46,8 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "list_upcoming_appointments",
         "description": (
             "List upcoming open appointments for a validated patient_id "
-            "(from lookup_patient). Speaks times in America/New_York context."
+            "(from lookup_patient). Each item has speak_as and local_time in "
+            "America/New_York — read speak_as aloud, never UTC or start_utc."
         ),
         "parameters": {
             "type": "object",
@@ -77,7 +78,8 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "find_open_slots",
         "description": (
             "Find open appointment slots for a visit type. "
-            "Offer only 2–3 options to the caller. READ ONLY — does not book."
+            "Offer only 2–3 options. Read each slot speak_as (Eastern). "
+            "READ ONLY — does not book. Use start_utc only as the machine id for later tools."
         ),
         "parameters": {
             "type": "object",

@@ -143,6 +143,138 @@ def test_upcoming_filters_open_statuses(flow, client):
     ids = {a["id"] for a in result["appointments"]}
     assert ids == {1, 4}
     assert result["patient_id"] == 99
+    assert result["timezone"] == "America/New_York"
+    for a in result["appointments"]:
+        assert a["speak_as"]
+        assert "Eastern" in a["speak_as"]
+        assert a["local_timezone"] == "America/New_York"
+        assert a["start_utc"].endswith("Z")
+        # Model must not need raw Z in speech
+        assert "UTC" not in a["speak_as"]
+        assert "Z" not in a["speak_as"]
+
+
+# ── speak_as / America/New_York presentation ────────────────────────────────
+
+
+def test_to_ny_fields_edt_summer():
+    """18:10Z in July = 2:10 PM Eastern (EDT, UTC-4) — never 7 PM."""
+    from liora_tools.modmed.scheduling_flow import _to_ny_fields
+
+    fields = _to_ny_fields("2026-07-28T18:10:00.000Z")
+    assert fields["local_timezone"] == "America/New_York"
+    assert fields["local_time"] == "2:10 PM"
+    assert fields["local_date"] == "2026-07-28"
+    assert fields["local_weekday"] == "Tuesday"
+    assert fields["speak_as"] == "Tuesday, July 28 at 2:10 PM Eastern"
+    assert fields["start_utc"] == "2026-07-28T18:10:00Z"
+
+
+def test_to_ny_fields_est_winter():
+    """18:10Z in January = 1:10 PM Eastern (EST, UTC-5)."""
+    from liora_tools.modmed.scheduling_flow import _to_ny_fields
+
+    fields = _to_ny_fields("2026-01-15T18:10:00.000Z")
+    assert fields["local_time"] == "1:10 PM"
+    assert fields["local_weekday"] == "Thursday"
+    assert fields["speak_as"] == "Thursday, January 15 at 1:10 PM Eastern"
+
+
+def test_to_ny_fields_ema_plus0000_and_midnight():
+    from liora_tools.modmed.scheduling_flow import _to_ny_fields
+
+    # EMA +0000 offset, 14:00Z August = 10:00 AM EDT
+    fields = _to_ny_fields("2026-08-01T14:00:00.000+0000")
+    assert fields["local_time"] == "10:00 AM"
+    assert fields["speak_as"] == "Saturday, August 1 at 10:00 AM Eastern"
+    assert fields["start_utc"] == "2026-08-01T14:00:00Z"
+
+    # 05:00Z → previous calendar day in Eastern (midnight hour)
+    late = _to_ny_fields("2026-03-01T05:00:00Z")
+    assert late["local_date"] == "2026-03-01"
+    assert late["local_time"] == "12:00 AM"
+    assert "Eastern" in late["speak_as"]
+
+
+def test_to_ny_fields_invalid_and_none():
+    from liora_tools.modmed.scheduling_flow import _to_ny_fields
+
+    empty = _to_ny_fields(None)
+    assert empty["speak_as"] is None
+    assert empty["local_timezone"] == "America/New_York"
+    bad = _to_ny_fields("not-a-date")
+    assert bad["speak_as"] is None
+    assert bad["start_utc"] == "not-a-date"
+
+
+def test_appt_summary_uses_speak_as():
+    from liora_tools.modmed.scheduling_flow import _appt_summary
+
+    row = _appt_summary(_appt(42, start="2026-07-28T18:10:00.000Z"))
+    assert row["id"] == 42
+    assert row["speak_as"] == "Tuesday, July 28 at 2:10 PM Eastern"
+    assert row["start_date"] == "2026-07-28"
+    assert row["type_name"] == "Follow Up"
+
+
+def test_find_open_slots_includes_speak_as(flow, client):
+    client.find_slots.return_value = [
+        {
+            "provider": {"id": 7, "firstName": "A", "lastName": "Bee"},
+            "facility": {"id": 2040, "name": "Main", "timeZone": "US/Pacific"},
+            "appointments": [
+                {
+                    "scheduledStartDate": "2026-08-01T15:00:00.000+0000",
+                    "scheduledEndDate": "2026-08-01T15:15:00.000+0000",
+                    "scheduledDuration": 15,
+                },
+            ],
+        }
+    ]
+    result = flow.find_open_slots(6188, limit=1)
+    assert result["count"] == 1
+    assert result["timezone"] == "America/New_York"
+    slot = result["slots"][0]
+    assert slot["time_zone"] == "America/New_York"  # not facility Pacific
+    assert slot["speak_as"] == "Saturday, August 1 at 11:00 AM Eastern"
+    assert slot["local_time"] == "11:00 AM"
+    assert "UTC" not in slot["speak_as"]
+
+
+def test_lookup_slots_and_appts_carry_speak_as(flow, client):
+    client.list_patients.return_value = [_patient(10)]
+    client.list_appointments.return_value = [
+        _appt(1, start="2026-07-28T18:10:00.000Z"),
+    ]
+    client.find_slots.return_value = [
+        {
+            "provider": {"id": 1, "name": "Dr X"},
+            "facility": {"id": 2040, "name": "Main"},
+            "appointments": [
+                {
+                    "scheduledStartDate": "2026-08-02T14:00:00.000+0000",
+                    "scheduledEndDate": "2026-08-02T14:15:00.000+0000",
+                    "scheduledDuration": 15,
+                }
+            ],
+        }
+    ]
+    result = flow.lookup(last_name="Doe", appt_type_id=6188, slot_limit=3)
+    appt = result["appointments"]["appointments"][0]
+    assert appt["speak_as"] == "Tuesday, July 28 at 2:10 PM Eastern"
+    slot = result["slots"]["slots"][0]
+    assert "Eastern" in slot["speak_as"]
+    assert slot["local_timezone"] == "America/New_York"
+
+
+def test_scheduling_prompt_forbids_utc_conversion():
+    from voice_agent import config
+
+    text = config.SYSTEM_INSTRUCTIONS_SCHEDULING
+    assert "speak_as" in text
+    assert "America/New_York" in text
+    assert "Never convert UTC" in text or "never convert UTC" in text.lower()
+    assert "Eastern" in text
 
 
 def test_find_open_slots_flattens_and_limits(flow, client):

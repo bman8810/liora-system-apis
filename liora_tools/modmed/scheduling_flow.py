@@ -66,6 +66,89 @@ def _provider_name(provider: dict | None) -> str | None:
     return name or None
 
 
+def _parse_dt(val: str | None):
+    """Parse EMA ISO timestamps (Z / +0000 / +00:00) to aware datetime, or None."""
+    if not val:
+        return None
+    s = str(val).strip()
+    try:
+        from datetime import datetime, timezone
+
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        # +0000 -> +00:00 (EMA often omits the colon)
+        if len(s) >= 5 and s[-5] in "+-" and s[-3] != ":":
+            s = s[:-2] + ":" + s[-2:]
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _to_ny_fields(val: str | None) -> dict:
+    """America/New_York display fields for voice (model must not convert UTC)."""
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+
+    dt = _parse_dt(val)
+    if not dt:
+        return {
+            "start_utc": val,
+            "local_timezone": "America/New_York",
+            "local_time": None,
+            "local_date": None,
+            "local_weekday": None,
+            "speak_as": None,
+        }
+    ny = dt.astimezone(ZoneInfo("America/New_York"))
+    hour12 = ny.hour % 12 or 12
+    ampm = "AM" if ny.hour < 12 else "PM"
+    local_time = f"{hour12}:{ny.strftime('%M')} {ampm}"
+    speak = (
+        f"{ny.strftime('%A')}, {ny.strftime('%B')} {ny.day} "
+        f"at {local_time} Eastern"
+    )
+    return {
+        "start_utc": dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "local_timezone": "America/New_York",
+        "local_time": local_time,
+        "local_date": ny.strftime("%Y-%m-%d"),
+        "local_weekday": ny.strftime("%A"),
+        "speak_as": speak,
+    }
+
+
+def _appt_type_name(a: dict) -> str | None:
+    if a.get("appointmentTypeName"):
+        return a.get("appointmentTypeName")
+    at = a.get("appointmentType") or {}
+    return at.get("name") if isinstance(at, dict) else None
+
+
+def _appt_summary(a: dict) -> dict:
+    """Patient-facing appointment row: internal start kept; speech uses speak_as only."""
+    provider = a.get("provider") or {}
+    facility = a.get("facility") or {}
+    start_raw = a.get("scheduledStartDate") or a.get("scheduledStartDateLd")
+    out = {
+        "id": a.get("id"),
+        "start": start_raw,
+        "start_date": str(a.get("scheduledStartDateLd") or "")[:10] or None,
+        "end": a.get("scheduledEndDate"),
+        "duration": a.get("scheduledDuration"),
+        "type_name": _appt_type_name(a),
+        "status": a.get("status"),
+        "provider_name": _provider_name(provider),
+        "facility_name": facility.get("name"),
+    }
+    out.update(_to_ny_fields(start_raw))
+    if out.get("local_date"):
+        out["start_date"] = out["local_date"]
+    return out
+
+
 class SchedulingFlow:
     """Read-only patient validation + upcoming appts + open slots."""
 
@@ -197,18 +280,7 @@ class SchedulingFlow:
             status = (a.get("status") or "").upper()
             if status not in self._open_statuses:
                 continue
-            provider = a.get("provider") or {}
-            facility = a.get("facility") or {}
-            appointments.append({
-                "id": a.get("id"),
-                "start": a.get("scheduledStartDate"),
-                "end": a.get("scheduledEndDate"),
-                "duration": a.get("scheduledDuration"),
-                "type_name": a.get("appointmentTypeName"),
-                "status": a.get("status"),
-                "provider_name": _provider_name(provider),
-                "facility_name": facility.get("name"),
-            })
+            appointments.append(_appt_summary(a))
 
         return {
             "patient_id": patient_id,
@@ -216,6 +288,8 @@ class SchedulingFlow:
             "end_date": end_s,
             "count": len(appointments),
             "appointments": appointments,
+            "timezone": "America/New_York",
+            "speak_hint": "Read speak_as aloud; never convert start/start_utc yourself.",
         }
 
     def list_visit_types(self) -> list:
@@ -260,10 +334,9 @@ class SchedulingFlow:
             provider_name = _provider_name(provider)
             facility_id = facility.get("id")
             facility_name = facility.get("name")
-            time_zone = facility.get("timeZone")
 
             for appt in group.get("appointments") or []:
-                slots.append({
+                slot = {
                     "start": appt.get("scheduledStartDate"),
                     "end": appt.get("scheduledEndDate"),
                     "duration": appt.get("scheduledDuration"),
@@ -271,8 +344,11 @@ class SchedulingFlow:
                     "provider_name": provider_name,
                     "facility_id": facility_id,
                     "facility_name": facility_name,
-                    "time_zone": appt.get("timeZoneId") or time_zone,
-                })
+                    # Presentation contract for Genie — practice is always Eastern.
+                    "time_zone": "America/New_York",
+                }
+                slot.update(_to_ny_fields(appt.get("scheduledStartDate")))
+                slots.append(slot)
                 if len(slots) >= limit:
                     break
             if len(slots) >= limit:
@@ -282,6 +358,8 @@ class SchedulingFlow:
             "appt_type_id": appt_type_id,
             "count": len(slots),
             "slots": slots[:limit],
+            "timezone": "America/New_York",
+            "speak_hint": "Read speak_as aloud; never convert start/start_utc yourself.",
         }
 
     def lookup(
