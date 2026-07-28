@@ -283,11 +283,13 @@ async def cancel_appointment(appointment_id: str, reason: str = "PATIENT_CANCELL
 
 async def validate_patient(last_name: str = None, first_name: str = None,
                            dob: str = None, phone: str = None,
-                           mrn: str = None, page_size: int = 25) -> dict:
+                           mrn: str = None, page_size: int = 25,
+                           include_test_patients: bool = False) -> dict:
     def _call():
         return SchedulingFlow(_get_client()).validate_patient(
             last_name=last_name, first_name=first_name, dob=dob,
             phone=phone, mrn=mrn, page_size=page_size,
+            include_test_patients=include_test_patients,
         )
     return await asyncio.to_thread(_call)
 
@@ -301,6 +303,24 @@ async def list_upcoming_for_patient(patient_id, days_ahead: int = 90,
     return await asyncio.to_thread(_call)
 
 
+async def list_past_for_patient(
+    patient_id,
+    days_back: int = 365,
+    page_size: int = 50,
+    limit: int = 5,
+    include_cancelled: bool = False,
+) -> dict:
+    def _call():
+        return SchedulingFlow(_get_client()).list_past_appointments(
+            patient_id,
+            days_back=days_back,
+            page_size=page_size,
+            limit=limit,
+            include_cancelled=include_cancelled,
+        )
+    return await asyncio.to_thread(_call)
+
+
 async def list_visit_types() -> list:
     def _call():
         return SchedulingFlow(_get_client()).list_visit_types()
@@ -310,6 +330,8 @@ async def list_visit_types() -> list:
 async def scheduling_lookup(
     last_name: str = None, first_name: str = None, dob: str = None,
     phone: str = None, mrn: str = None, days_ahead: int = 90,
+    days_back: int = 365, include_past: bool = True,
+    include_test_patients: bool = False,
     appt_type_id=None, duration: int = 15, time_of_day: str = "ANYTIME",
     specific_date: str = None, slot_limit: int = 5,
 ) -> dict:
@@ -317,6 +339,8 @@ async def scheduling_lookup(
         return SchedulingFlow(_get_client()).lookup(
             last_name=last_name, first_name=first_name, dob=dob,
             phone=phone, mrn=mrn, days_ahead=days_ahead,
+            days_back=days_back, include_past=include_past,
+            include_test_patients=include_test_patients,
             appt_type_id=appt_type_id, duration=duration,
             time_of_day=time_of_day, specific_date=specific_date,
             slot_limit=slot_limit,

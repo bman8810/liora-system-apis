@@ -9,7 +9,7 @@ import pytest
 
 from liora_tools.exceptions import WriteGatedError
 from liora_tools.modmed.client import EmaClient
-from liora_tools.modmed.scheduling_flow import SchedulingFlow
+from liora_tools.modmed.scheduling_flow import SchedulingFlow, _to_ny_fields
 from liora_tools.modmed.write_gate import ema_writes_enabled, require_ema_writes
 
 
@@ -33,12 +33,12 @@ def _patient(pid, last="Doe", first="Jane", status="ACTIVE", mrn="MRN001",
     return p
 
 
-def _appt(aid, status="CONFIRMED", start="2026-08-01T14:00:00.000+0000"):
+def _appt(aid, status="CONFIRMED", start="2026-08-01T18:10:00.000Z"):
     return {
         "id": aid,
         "status": status,
         "scheduledStartDate": start,
-        "scheduledEndDate": "2026-08-01T14:15:00.000+0000",
+        "scheduledEndDate": "2026-08-01T18:25:00.000Z",
         "scheduledDuration": 15,
         "appointmentTypeName": "Follow Up",
         "provider": {"id": 10, "name": "Dr Test"},
@@ -66,6 +66,7 @@ def test_validate_none(flow, client):
     assert result["match_count"] == 0
     assert result["patient"] is None
     assert result["candidates"] == []
+    assert result["noise_filtered"] == 0
 
 
 def test_validate_matched(flow, client):
@@ -118,6 +119,50 @@ def test_validate_phone_filter(flow, client):
     assert client.list_patients.call_args.kwargs["page_size"] == 100
 
 
+def test_validate_phone_last10_digits(flow, client):
+    client.list_patients.return_value = [
+        _patient(1001, phone="13302067819"),
+    ]
+    result = flow.validate_patient(phone="+1 (330) 206-7819", dob="1990-01-01")
+    assert result["status"] == "matched"
+    assert result["patient"]["id"] == 1001
+
+
+def test_validate_filters_test_phreesia_when_multiple(flow, client):
+    client.list_patients.return_value = [
+        _patient(1, last="PHREESIA", first="Test", phone="3302067819"),
+        _patient(2, last="Reed", first="Barric", phone="3302067819"),
+        _patient(3, last="TEST", first="Patient", phone="3302067819"),
+        _patient(4, last="Training", first="Bot", phone="3302067819"),
+    ]
+    result = flow.validate_patient(phone="3302067819")
+    assert result["status"] == "matched"
+    assert result["patient"]["id"] == 2
+    assert result["patient"]["last_name"] == "Reed"
+    assert result["noise_filtered"] == 3
+
+
+def test_validate_keeps_sole_test_chart(flow, client):
+    """If only noise charts match, do not empty the result set."""
+    client.list_patients.return_value = [
+        _patient(9, last="PHREESIA", first="Desk", phone="3302067819"),
+    ]
+    result = flow.validate_patient(phone="3302067819")
+    assert result["status"] == "matched"
+    assert result["patient"]["id"] == 9
+
+
+def test_validate_include_test_patients_lab_flag(flow, client):
+    client.list_patients.return_value = [
+        _patient(1, last="PHREESIA", first="Test", phone="3302067819"),
+        _patient(2, last="Reed", first="Barric", phone="3302067819"),
+    ]
+    result = flow.validate_patient(phone="3302067819", include_test_patients=True)
+    assert result["status"] == "ambiguous"
+    assert result["match_count"] == 2
+    assert result["noise_filtered"] == 0
+
+
 def test_validate_prefers_single_active_among_mixed(flow, client):
     client.list_patients.return_value = [
         _patient(1001, status="INACTIVE"),
@@ -128,7 +173,20 @@ def test_validate_prefers_single_active_among_mixed(flow, client):
     assert result["patient"]["id"] == 1002
 
 
-# ── upcoming ────────────────────────────────────────────────────────────────
+# ── timezone / speak_as on appt shape ───────────────────────────────────────
+
+
+def test_to_ny_fields_eastern_not_utc_plus5():
+    # 18:10Z = 2:10 PM Eastern (EDT, July) — not 7:10 PM
+    fields = _to_ny_fields("2026-07-28T18:10:00.000Z")
+    assert fields["local_timezone"] == "America/New_York"
+    assert fields["local_time"] == "2:10 PM"
+    assert "2:10 PM Eastern" in fields["speak_as"]
+    assert "Tuesday" in fields["speak_as"]
+    assert fields["start_utc"].endswith("Z")
+
+
+# ── upcoming / past contracts ───────────────────────────────────────────────
 
 
 def test_upcoming_filters_open_statuses(flow, client):
@@ -143,6 +201,74 @@ def test_upcoming_filters_open_statuses(flow, client):
     ids = {a["id"] for a in result["appointments"]}
     assert ids == {1, 4}
     assert result["patient_id"] == 99
+    assert result["empty"] is False
+    assert "message" in result
+
+
+def test_upcoming_empty_stable_shape(flow, client):
+    client.list_appointments.return_value = []
+    result = flow.list_upcoming_appointments(42)
+    assert result == {
+        **result,
+        "patient_id": 42,
+        "count": 0,
+        "appointments": [],
+        "empty": True,
+    }
+    assert result["appointments"] == []
+    assert result["start_date"]
+    assert result["end_date"]
+    assert "No upcoming" in result["message"]
+
+
+def test_upcoming_includes_speak_as(flow, client):
+    client.list_appointments.return_value = [
+        _appt(1, status="CONFIRMED", start="2026-07-28T18:10:00.000Z"),
+        _appt(2, status="CANCELED"),
+        _appt(3, status="COMPLETED"),
+        _appt(4, status="PENDING", start="2026-08-01T14:00:00.000Z"),
+    ]
+    result = flow.list_upcoming_appointments(99, days_ahead=30)
+    assert result["count"] == 2
+    appt = next(a for a in result["appointments"] if a["id"] == 1)
+    assert appt["speak_as"]
+    assert "Eastern" in appt["speak_as"]
+    assert "2:10 PM" in appt["local_time"]
+    assert appt["type_name"] == "Follow Up"
+
+
+def test_past_excludes_cancelled_and_orders_latest(flow, client):
+    client.list_appointments.return_value = [
+        _appt(1, status="CHECKED_OUT", start="2026-01-01T15:00:00.000Z"),
+        _appt(2, status="CANCELLED", start="2026-06-01T15:00:00.000Z"),
+        _appt(3, status="CANCELED", start="2026-05-01T15:00:00.000Z"),
+        _appt(4, status="CHECKED_OUT", start="2026-07-01T15:00:00.000Z"),
+    ]
+    result = flow.list_past_appointments(7, limit=5)
+    assert result["count"] == 2
+    assert result["latest"]["id"] == 4
+    assert all(a["id"] not in {2, 3} for a in result["appointments"])
+    assert result["empty"] is False
+    assert result["latest"]["speak_as"]
+
+
+def test_past_empty_stable_shape(flow, client):
+    client.list_appointments.return_value = []
+    result = flow.list_past_appointments(7)
+    assert result["count"] == 0
+    assert result["appointments"] == []
+    assert result["latest"] is None
+    assert result["empty"] is True
+    assert "No past" in result["message"]
+
+
+def test_past_include_cancelled(flow, client):
+    client.list_appointments.return_value = [
+        _appt(2, status="CANCELLED", start="2026-06-01T15:00:00.000Z"),
+    ]
+    result = flow.list_past_appointments(7, include_cancelled=True)
+    assert result["count"] == 1
+    assert result["latest"]["id"] == 2
 
 
 def test_find_open_slots_flattens_and_limits(flow, client):
@@ -168,6 +294,7 @@ def test_find_open_slots_flattens_and_limits(flow, client):
     assert result["count"] == 1
     assert result["slots"][0]["provider_id"] == 7
     assert result["slots"][0]["facility_id"] == 2040
+    assert result["slots"][0]["speak_as"]
 
 
 def test_lookup_next_actions_matched_with_slots(flow, client):
@@ -189,6 +316,7 @@ def test_lookup_next_actions_matched_with_slots(flow, client):
     result = flow.lookup(last_name="Doe", appt_type_id=6188, slot_limit=3)
     assert result["patient_result"]["status"] == "matched"
     assert result["appointments"]["count"] == 1
+    assert result["past_appointments"] is not None
     assert result["slots"]["count"] == 1
     assert "confirm_existing" in result["next_actions"]
     assert "offer_slots" in result["next_actions"]
@@ -200,6 +328,22 @@ def test_lookup_handoff_none(flow, client):
     result = flow.lookup(last_name="Nobody")
     assert result["next_actions"] == ["handoff_no_match"]
     assert result["appointments"] is None
+    assert result["past_appointments"] is None
+
+
+def test_lookup_past_only_suggests_last_visit(flow, client):
+    client.list_patients.return_value = [_patient(10)]
+    # First call upcoming (empty open), second call past (has history)
+    client.list_appointments.side_effect = [
+        [_appt(9, status="CHECKED_OUT", start="2026-01-01T15:00:00.000Z")],
+        [_appt(9, status="CHECKED_OUT", start="2026-01-01T15:00:00.000Z")],
+    ]
+    result = flow.lookup(last_name="Doe", include_past=True)
+    assert result["patient_result"]["status"] == "matched"
+    assert result["appointments"]["count"] == 0
+    assert result["past_appointments"]["count"] == 1
+    assert "confirm_last_visit" in result["next_actions"]
+    assert "ask_visit_type" in result["next_actions"]
 
 
 # ── write gate ──────────────────────────────────────────────────────────────
@@ -253,12 +397,70 @@ def test_ema_tool_lookup_patient_mocked():
         "patient": {"id": 1, "last_name": "Doe", "first_name": "J"},
         "candidates": [],
         "message": "ok",
+        "noise_filtered": 0,
     }
     with patch.object(ema_tools, "_get_flow", return_value=mock_flow):
         out = json.loads(ema_tools.handle_ema_tool("lookup_patient", {"last_name": "Doe"}))
     assert out["status"] == "matched"
     assert out["booking_available"] is False
     assert out["writes_enabled"] is False
+
+
+def test_ema_tool_past_and_upcoming_require_patient_id():
+    from voice_agent import ema_tools
+
+    ema_tools.clear_flow_cache()
+    mock_flow = MagicMock()
+    with patch.object(ema_tools, "_get_flow", return_value=mock_flow):
+        up = json.loads(ema_tools.handle_ema_tool("list_upcoming_appointments", {}))
+        past = json.loads(ema_tools.handle_ema_tool("list_past_appointments", {}))
+    assert up["error"] == "patient_id_required"
+    assert past["error"] == "patient_id_required"
+    mock_flow.list_upcoming_appointments.assert_not_called()
+    mock_flow.list_past_appointments.assert_not_called()
+
+
+def test_ema_tool_past_mocked():
+    from voice_agent import ema_tools
+
+    ema_tools.clear_flow_cache()
+    mock_flow = MagicMock()
+    mock_flow.list_past_appointments.return_value = {
+        "patient_id": 7,
+        "count": 1,
+        "appointments": [{"id": 1, "speak_as": "Monday at 2:00 PM Eastern"}],
+        "latest": {"id": 1},
+        "empty": False,
+    }
+    with patch.object(ema_tools, "_get_flow", return_value=mock_flow):
+        out = json.loads(
+            ema_tools.handle_ema_tool("list_past_appointments", {"patient_id": 7, "limit": 3})
+        )
+    assert out["count"] == 1
+    assert out["latest"]["id"] == 1
+    assert out["writes_enabled"] is False
+    mock_flow.list_past_appointments.assert_called_once()
+
+
+def test_ema_tool_injects_outbound_dial_phone(monkeypatch):
+    from voice_agent import ema_tools
+
+    ema_tools.clear_flow_cache()
+    monkeypatch.setenv("OUTBOUND_DIAL_PHONE", "3302067819")
+    mock_flow = MagicMock()
+    mock_flow.validate_patient.return_value = {
+        "status": "matched",
+        "match_count": 1,
+        "patient": {"id": 2},
+        "candidates": [],
+        "message": "ok",
+        "noise_filtered": 1,
+    }
+    with patch.object(ema_tools, "_get_flow", return_value=mock_flow):
+        json.loads(ema_tools.handle_ema_tool("lookup_patient", {"dob": "1988-05-11"}))
+    kwargs = mock_flow.validate_patient.call_args.kwargs
+    assert kwargs["phone"] == "3302067819"
+    assert kwargs["dob"] == "1988-05-11"
 
 
 def test_ema_tool_unknown():
@@ -284,6 +486,7 @@ def test_tool_definitions_present():
     assert names == {
         "lookup_patient",
         "list_upcoming_appointments",
+        "list_past_appointments",
         "list_visit_types",
         "find_open_slots",
         "schedule_lookup",
