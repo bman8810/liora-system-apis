@@ -1,6 +1,7 @@
-"""Read-only EMA scheduling tools for Grok Realtime voice agent.
+"""EMA scheduling + refill triage tools for Grok Realtime voice agent.
 
-Writes are never exposed here. Mutations stay behind EMA_WRITES_ENABLED on EmaClient.
+Read tools always available. Product/Rx refill tools queue staff messages only
+(gated by EMA_WRITES_ENABLED). Voice NEVER e-prescribes.
 """
 
 from __future__ import annotations
@@ -131,6 +132,67 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": [],
         },
     },
+    {
+        "type": "function",
+        "name": "request_product_refill",
+        "description": (
+            "Request office PRODUCT/retail stock (shampoo, cleanser sold in office) — "
+            "NOT a prescription. Queues inventory/front-desk message. "
+            "Distinct from request_rx_refill. Requires confirmed=true and "
+            "EMA_WRITES_ENABLED to queue. Never e-prescribes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_name": {
+                    "type": "string",
+                    "description": "Product name as patient said it",
+                },
+                "patient_id": {
+                    "type": "integer",
+                    "description": "EMA patient id if known",
+                },
+                "quantity": {"type": "string", "description": "Optional quantity"},
+                "notes": {"type": "string"},
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "true only after caller clearly wants the request messaged",
+                },
+            },
+            "required": ["product_name", "confirmed"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "request_rx_refill",
+        "description": (
+            "Request a PRESCRIPTION refill as a staff/provider MESSAGE only. "
+            "NEVER writes eRx or claims a script was called in. "
+            "Requires matched patient_id, medication name, verbal confirm (confirmed=true), "
+            "and EMA_WRITES_ENABLED to queue the message."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "patient_id": {"type": "integer"},
+                "medication": {
+                    "type": "string",
+                    "description": "Medication name as patient said it",
+                },
+                "pharmacy": {
+                    "type": "string",
+                    "description": "Preferred pharmacy if given",
+                },
+                "notes": {"type": "string"},
+                "provider_name": {"type": "string"},
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "true only after caller clearly wants the request messaged",
+                },
+            },
+            "required": ["patient_id", "medication", "confirmed"],
+        },
+    },
 ]
 
 
@@ -148,8 +210,18 @@ def _get_flow():
     return SchedulingFlow(get_ema_client())
 
 
+@lru_cache(maxsize=1)
+def _get_refill_flow():
+    from liora_tools.auth.session_manager import get_ema_client
+    from liora_tools.modmed.refill_flow import RefillFlow
+
+    client = get_ema_client()
+    return RefillFlow(client, scheduling_flow=_get_flow())
+
+
 def clear_flow_cache() -> None:
     _get_flow.cache_clear()
+    _get_refill_flow.cache_clear()
 
 
 def _compact_json(data: Any) -> str:
@@ -157,7 +229,11 @@ def _compact_json(data: Any) -> str:
 
 
 def handle_ema_tool(name: str, arguments: dict) -> str:
-    """Execute a read-only EMA tool; return JSON string for Grok."""
+    """Execute EMA voice tool (read + gated refill messages); return JSON for Grok."""
+    known = {t["name"] for t in EMA_TOOL_DEFINITIONS}
+    if name not in known:
+        return _compact_json({"error": "unknown_tool", "name": name})
+
     try:
         flow = _get_flow()
     except Exception as e:
@@ -215,14 +291,61 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
                 time_of_day=arguments.get("time_of_day") or "ANYTIME",
                 slot_limit=int(arguments.get("slot_limit") or 5),
             )
+        elif name == "request_product_refill":
+            refill = _get_refill_flow()
+            # pharmacy is intentionally not accepted on product path
+            result = refill.request_product_refill(
+                product_name=arguments.get("product_name") or "",
+                patient_id=arguments.get("patient_id"),
+                quantity=arguments.get("quantity"),
+                notes=arguments.get("notes") or "",
+                confirmed=bool(arguments.get("confirmed")),
+            )
+        elif name == "request_rx_refill":
+            pid = arguments.get("patient_id")
+            if pid is None:
+                return _compact_json({"error": "patient_id_required"})
+            refill = _get_refill_flow()
+            result = refill.request_rx_refill(
+                patient_id=pid,
+                medication=arguments.get("medication") or "",
+                pharmacy=arguments.get("pharmacy"),
+                notes=arguments.get("notes") or "",
+                provider_name=arguments.get("provider_name"),
+                confirmed=bool(arguments.get("confirmed")),
+                skip_lapse_check=True,
+            )
         else:
             return _compact_json({"error": "unknown_tool", "name": name})
 
-        # Never claim write capability
         if isinstance(result, dict):
-            result = {**result, "writes_enabled": False, "booking_available": False}
+            # Preserve explicit keys from refill helpers; read tools stay non-booking
+            if name in {"request_product_refill", "request_rx_refill"}:
+                if "writes_enabled" not in result:
+                    result = {**result, "writes_enabled": False}
+                if "booking_available" not in result:
+                    result = {**result, "booking_available": False}
+            else:
+                result = {**result, "writes_enabled": False, "booking_available": False}
         return _compact_json(result)
     except Exception as e:
+        from liora_tools.exceptions import WriteGatedError
+
+        if isinstance(e, WriteGatedError):
+            return _compact_json(
+                {
+                    "status": "writes_disabled",
+                    "error": "writes_disabled",
+                    "tool": name,
+                    "detail": str(e),
+                    "erx": False,
+                    "prescription_written": False,
+                    "message_queued": False,
+                    "writes_enabled": False,
+                    "booking_available": False,
+                    "message": "Cannot queue staff message right now; offer callback.",
+                }
+            )
         logger.exception("EMA tool %s failed", name)
         return _compact_json({"error": "ema_tool_failed", "tool": name, "detail": str(e)})
 

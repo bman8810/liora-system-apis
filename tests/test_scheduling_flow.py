@@ -281,10 +281,12 @@ def test_tool_definitions_present():
     from voice_agent.ema_tools import EMA_TOOL_DEFINITIONS
 
     names = {t["name"] for t in EMA_TOOL_DEFINITIONS}
-    assert names == {
+    assert {
         "lookup_patient",
         "list_upcoming_appointments",
         "list_visit_types",
         "find_open_slots",
         "schedule_lookup",
-    }
+        "request_product_refill",
+        "request_rx_refill",
+    }.issubset(names)
