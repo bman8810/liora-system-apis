@@ -168,6 +168,93 @@ def test_find_open_slots_flattens_and_limits(flow, client):
     assert result["count"] == 1
     assert result["slots"][0]["provider_id"] == 7
     assert result["slots"][0]["facility_id"] == 2040
+    assert result["ranking"].startswith("non_zzz")
+
+
+def _slot_group(provider, starts, facility_id=2040):
+    return {
+        "provider": provider,
+        "facility": {"id": facility_id, "name": "Main", "timeZone": "America/New_York"},
+        "appointments": [
+            {
+                "scheduledStartDate": start,
+                "scheduledEndDate": start.replace("T14", "T14").replace("T15", "T15"),
+                "scheduledDuration": 15,
+            }
+            for start in starts
+        ],
+    }
+
+
+def test_find_open_slots_rhee_before_zzz(flow, client):
+    """zzz listed first by EMA must not beat Rhee in ranked results."""
+    client.find_slots.return_value = [
+        _slot_group(
+            {"id": 99, "name": "zzzJessica Lab"},
+            ["2026-08-01T14:00:00.000Z"],
+        ),
+        _slot_group(
+            {"id": 8327689, "name": "Libby Rhee, MD"},
+            ["2026-08-01T15:00:00.000Z"],
+        ),
+    ]
+    result = flow.find_open_slots(6188, limit=2)
+    assert result["count"] == 2
+    assert result["slots"][0]["provider_id"] == 8327689
+    assert "Rhee" in (result["slots"][0]["provider_name"] or "")
+    assert result["slots"][1]["provider_id"] == 99
+    assert result["ranking"] == "non_zzz_then_rhee_first_then_start"
+
+
+def test_find_open_slots_no_first_provider_starvation(flow, client):
+    """Many early zzz slots must not fill the limit and hide Rhee."""
+    zzz_starts = [f"2026-08-01T1{i}:00:00.000Z" for i in range(0, 5)]
+    client.find_slots.return_value = [
+        _slot_group({"id": 99, "name": "zzzJessica Lab"}, zzz_starts),
+        _slot_group(
+            {"id": 8327689, "name": "Libby Rhee, MD"},
+            ["2026-08-01T18:00:00.000Z"],
+        ),
+        _slot_group(
+            {"id": 55, "name": "Alex Other, PA"},
+            ["2026-08-01T16:00:00.000Z"],
+        ),
+    ]
+    result = flow.find_open_slots(6188, limit=3)
+    assert result["count"] == 3
+    names = [s.get("provider_name") or "" for s in result["slots"]]
+    ids = [s.get("provider_id") for s in result["slots"]]
+    assert 8327689 in ids, f"Rhee starved out of limit=3: {names}"
+    assert result["slots"][0]["provider_id"] == 8327689
+    # Placeholders deprioritized but not removed when room remains.
+    assert any(i == 99 for i in ids) or any(i == 55 for i in ids)
+
+
+def test_find_open_slots_ranking_deterministic(flow, client):
+    client.find_slots.return_value = [
+        _slot_group({"id": 99, "name": "zzzJessica Lab"}, ["2026-08-01T12:00:00.000Z"]),
+        _slot_group({"id": 55, "name": "Alex Other, PA"}, ["2026-08-01T16:00:00.000Z"]),
+        _slot_group({"id": 8327689, "name": "Libby Rhee, MD"}, ["2026-08-01T18:00:00.000Z"]),
+    ]
+    a = flow.find_open_slots(6188, limit=3)
+    b = flow.find_open_slots(6188, limit=3)
+    assert [s["provider_id"] for s in a["slots"]] == [s["provider_id"] for s in b["slots"]]
+    assert [s["start"] for s in a["slots"]] == [s["start"] for s in b["slots"]]
+    assert [s["provider_id"] for s in a["slots"]] == [8327689, 55, 99]
+
+
+def test_rank_open_slots_respects_primary_env(monkeypatch):
+    from liora_tools.modmed.scheduling_flow import rank_open_slots
+
+    monkeypatch.setenv("EMA_PRIMARY_PROVIDER_IDS", "55")
+    slots = [
+        {"provider_id": 77, "provider_name": "Sam Clinician, NP", "start": "2026-08-01T12:00:00.000Z"},
+        {"provider_id": 55, "provider_name": "Alex Other, PA", "start": "2026-08-01T18:00:00.000Z"},
+        {"provider_id": 99, "provider_name": "zzzLab", "start": "2026-08-01T10:00:00.000Z"},
+    ]
+    ranked = rank_open_slots(slots)
+    # Env primary wins over earlier non-primary clinician; zzz last.
+    assert [s["provider_id"] for s in ranked] == [55, 77, 99]
 
 
 def test_lookup_next_actions_matched_with_slots(flow, client):
