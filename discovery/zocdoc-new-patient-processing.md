@@ -16,6 +16,8 @@ For each new Zocdoc patient:
 
 **Important:** Always pass a `correlation_id` on both the "running" and "completed" calls so the second call **updates** the existing execution rather than creating a new one. Field name is always **`correlation_id`** (coordinate with GB + Weave metadata). Never put PHI in the id; never put the id in the patient-facing SMS body.
 
+**SoT:** [CORRELATION-ID-SOT.md](./CORRELATION-ID-SOT.md) — `zocdoc-{appointmentId}` (fallback `zocdoc-{mrn}-{YYYY-MM-DD}` only if appointment id missing).
+
 ```python
 # Primary: appointmentId (unique per booking).
 # Fallback only if appointment id missing: zocdoc-{mrn}-{YYYY-MM-DD}

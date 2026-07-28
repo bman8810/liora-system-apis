@@ -89,9 +89,12 @@ class GenieBottleClient:
         Args:
             task_slug: Slug of the task definition (e.g. 'zocdoc-new-booking').
             status: One of 'running', 'completed', 'failed', 'needs_review'.
-            correlation_id: Your own ID to correlate updates. Whitespace is
-                stripped. Empty/whitespace-only values raise ValueError (omit
-                entirely for one-shot creates without upsert).
+            correlation_id: Stable upsert key. Zocdoc new-booking SoT:
+                ``zocdoc-{appointmentId}`` (fallback
+                ``zocdoc-{mrn}-{YYYY-MM-DD}`` only if appointment id missing).
+                Same value on running→completed/failed. No PHI.
+                Whitespace stripped; empty raises ValueError (omit entirely
+                for one-shot creates without upsert).
             trigger_type: e.g. 'cron', 'webhook', 'manual'.
             trigger_source: e.g. 'zocdoc', 'modmed'.
             patient: Patient info — include 'mrn' key to auto-link patient record.
