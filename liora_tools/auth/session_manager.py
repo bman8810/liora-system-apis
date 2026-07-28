@@ -129,13 +129,7 @@ def get_ema_client():
     # Support both new format {"cookies": [...], "base_url": ...} and legacy flat array
     cookies = None
     if creds:
-        if isinstance(creds, dict):
-            cookies = creds.get("cookies")
-            if creds.get("base_url"):
-                config = EmaConfig(base_url=creds["base_url"], cookie_file=config.cookie_file,
-                                   facility_id=config.facility_id)
-        else:
-            cookies = creds
+        cookies = creds.get("cookies") if isinstance(creds, dict) else creds
 
     if cookies:
         ok = _client_ok(cookies, config)
