@@ -239,13 +239,203 @@ def test_client_create_gated(monkeypatch):
         client.create_appointment({})
 
 
+def test_is_confirmed_strict():
+    from liora_tools.modmed.write_gate import is_confirmed
+
+    assert is_confirmed(True) is True
+    assert is_confirmed("true") is True
+    assert is_confirmed("YES") is True
+    assert is_confirmed(1) is True
+    assert is_confirmed(False) is False
+    assert is_confirmed(None) is False
+    assert is_confirmed("false") is False  # bool("false") would be True — must not pass
+    assert is_confirmed("no") is False
+    assert is_confirmed(0) is False
+    assert is_confirmed("") is False
+
+
+def test_cancel_needs_confirmation(flow, client, monkeypatch):
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
+    result = flow.cancel_appointment(appointment_id=9, confirmed=False)
+    assert result["status"] == "needs_confirmation"
+    assert result["error"] == "needs_confirmation"
+    assert result["pending_write"]["op"] == "cancel"
+    assert result["confirm_policy"] == "one_write_per_confirm"
+    client.cancel_appointment.assert_not_called()
+
+
+def test_cancel_string_false_not_confirmed(flow, client, monkeypatch):
+    monkeypatch.setenv("EMA_WRITES_ENABLED", "true")
+    result = flow.cancel_appointment(appointment_id=9, confirmed="false")
+    assert result["status"] == "needs_confirmation"
+    client.cancel_appointment.assert_not_called()
+
+
+def test_reschedule_needs_confirmation(flow, client, monkeypatch):
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
+    result = flow.reschedule_appointment(
+        appointment_id=9,
+        new_start="2026-08-02T14:00:00.000Z",
+        confirmed=False,
+    )
+    assert result["status"] == "needs_confirmation"
+    assert result["pending_write"]["op"] == "reschedule"
+    client.reschedule.assert_not_called()
+
+
+def test_book_needs_confirmation(flow, client, monkeypatch):
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
+    result = flow.book_appointment(
+        patient_id=1,
+        provider_id=2,
+        facility_id=3,
+        appointment_type_id=4,
+        scheduled_start="2026-08-01T14:00:00.000Z",
+        confirmed=False,
+    )
+    assert result["status"] == "needs_confirmation"
+    assert result["pending_write"]["op"] == "book"
+    client._post.assert_not_called()
+    client.get_patient.assert_not_called()
+
+
+def test_cancel_writes_disabled_when_confirmed_no_partial(flow, client, monkeypatch):
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
+    with pytest.raises(WriteGatedError):
+        flow.cancel_appointment(appointment_id=9, confirmed=True)
+    client.cancel_appointment.assert_not_called()
+
+
+def test_reschedule_writes_disabled_when_confirmed_no_partial(flow, client, monkeypatch):
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
+    with pytest.raises(WriteGatedError):
+        flow.reschedule_appointment(
+            appointment_id=9,
+            new_start="2026-08-02T14:00:00.000Z",
+            confirmed=True,
+        )
+    client.reschedule.assert_not_called()
+
+
+def test_book_writes_disabled_when_confirmed_no_partial(flow, client, monkeypatch):
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
+    with pytest.raises(WriteGatedError):
+        flow.book_appointment(
+            patient_id=1,
+            provider_id=2,
+            facility_id=3,
+            appointment_type_id=4,
+            scheduled_start="2026-08-01T14:00:00.000Z",
+            confirmed=True,
+        )
+    client._post.assert_not_called()
+    client.get_patient.assert_not_called()
+
+
+def test_cancel_then_book_multi_step_requires_two_confirms(flow, client, monkeypatch):
+    """Reschedule fallback: cancel then book — each step needs its own confirm."""
+    monkeypatch.setenv("EMA_WRITES_ENABLED", "true")
+    client.cancel_appointment.return_value = {
+        "id": 1,
+        "status": "CANCELLED",
+        "scheduledStartDate": "2026-08-01T14:00:00.000Z",
+    }
+    # Step 1 without confirm — no write
+    c0 = flow.cancel_appointment(appointment_id=1, confirmed=False)
+    assert c0["status"] == "needs_confirmation"
+    client.cancel_appointment.assert_not_called()
+
+    # Step 1 with confirm — one write only
+    c1 = flow.cancel_appointment(appointment_id=1, confirmed=True)
+    assert c1["status"] == "cancelled"
+    assert client.cancel_appointment.call_count == 1
+
+    # Step 2 book without second confirm — must not write
+    b0 = flow.book_appointment(
+        patient_id=10,
+        provider_id=2,
+        facility_id=3,
+        appointment_type_id=4,
+        scheduled_start="2026-08-05T15:00:00.000Z",
+        confirmed=False,
+    )
+    assert b0["status"] == "needs_confirmation"
+    client._post.assert_not_called()
+
+    # Step 2 with confirm
+    client.get_patient.return_value = {"id": 10}
+    client.list_facilities.return_value = [{"id": 3, "timeZone": "US/Eastern"}]
+    client.list_appointment_types.return_value = [{"id": 4, "name": "FU"}]
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "id": 99,
+        "status": "PENDING",
+        "scheduledStartDate": "2026-08-05T15:00:00.000Z",
+    }
+    client._post.return_value = mock_resp
+    b1 = flow.book_appointment(
+        patient_id=10,
+        provider_id=2,
+        facility_id=3,
+        appointment_type_id=4,
+        scheduled_start="2026-08-05T15:00:00.000Z",
+        confirmed=True,
+    )
+    assert b1["status"] == "booked"
+    assert client._post.call_count == 1
+    # Cancel was not called again as part of book
+    assert client.cancel_appointment.call_count == 1
+
+
+def test_book_verify_cancel_path_when_writes_enabled(flow, client, monkeypatch):
+    """Lab-shaped path: book → list upcoming (verify) → cancel, each write confirmed."""
+    monkeypatch.setenv("EMA_WRITES_ENABLED", "true")
+    client.get_patient.return_value = {"id": 10, "lastName": "Reed"}
+    client.list_facilities.return_value = [{"id": 3, "name": "Main", "timeZone": "US/Eastern"}]
+    client.list_appointment_types.return_value = [{"id": 4, "name": "Follow Up"}]
+    created = {
+        "id": 555,
+        "status": "PENDING",
+        "scheduledStartDate": "2026-08-10T18:00:00.000Z",
+        "scheduledDuration": 15,
+        "appointmentTypeName": "Follow Up",
+        "provider": {"id": 2, "name": "Dr Rhee"},
+        "facility": {"id": 3, "name": "Main"},
+    }
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = created
+    client._post.return_value = mock_resp
+
+    booked = flow.book_appointment(
+        patient_id=10,
+        provider_id=2,
+        facility_id=3,
+        appointment_type_id=4,
+        scheduled_start="2026-08-10T18:00:00.000Z",
+        confirmed=True,
+    )
+    assert booked["status"] == "booked"
+    assert booked["raw_id"] == 555
+
+    client.list_appointments.return_value = [created]
+    upcoming = flow.list_upcoming_appointments(10)
+    assert upcoming["count"] == 1
+    assert upcoming["appointments"][0]["id"] == 555
+
+    client.cancel_appointment.return_value = {**created, "status": "CANCELLED"}
+    cancelled = flow.cancel_appointment(appointment_id=555, confirmed=True)
+    assert cancelled["status"] == "cancelled"
+    client.cancel_appointment.assert_called_once()
+
+
 # ── voice tools ─────────────────────────────────────────────────────────────
 
 
-def test_ema_tool_lookup_patient_mocked():
+def test_ema_tool_lookup_patient_mocked(monkeypatch):
     from voice_agent import ema_tools
 
     ema_tools.clear_flow_cache()
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
     mock_flow = MagicMock()
     mock_flow.validate_patient.return_value = {
         "status": "matched",
@@ -259,6 +449,87 @@ def test_ema_tool_lookup_patient_mocked():
     assert out["status"] == "matched"
     assert out["booking_available"] is False
     assert out["writes_enabled"] is False
+
+
+def test_ema_tool_cancel_needs_confirmation_short_circuit(monkeypatch):
+    from voice_agent import ema_tools
+
+    ema_tools.clear_flow_cache()
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
+    mock_flow = MagicMock()
+    with patch.object(ema_tools, "_get_flow", return_value=mock_flow):
+        out = json.loads(
+            ema_tools.handle_ema_tool(
+                "cancel_appointment",
+                {"appointment_id": 9, "confirmed": False},
+            )
+        )
+    assert out["status"] == "needs_confirmation"
+    assert out["confirm_policy"] == "one_write_per_confirm"
+    mock_flow.cancel_appointment.assert_not_called()
+
+
+def test_ema_tool_reschedule_string_false_needs_confirmation(monkeypatch):
+    from voice_agent import ema_tools
+
+    ema_tools.clear_flow_cache()
+    mock_flow = MagicMock()
+    with patch.object(ema_tools, "_get_flow", return_value=mock_flow):
+        out = json.loads(
+            ema_tools.handle_ema_tool(
+                "reschedule_appointment",
+                {
+                    "appointment_id": 9,
+                    "new_start": "2026-08-02T14:00:00.000Z",
+                    "confirmed": "false",
+                },
+            )
+        )
+    assert out["status"] == "needs_confirmation"
+    mock_flow.reschedule_appointment.assert_not_called()
+
+
+def test_ema_tool_cancel_writes_disabled(monkeypatch):
+    from voice_agent import ema_tools
+
+    ema_tools.clear_flow_cache()
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
+    mock_flow = MagicMock()
+    mock_flow.cancel_appointment.side_effect = WriteGatedError("blocked")
+    with patch.object(ema_tools, "_get_flow", return_value=mock_flow):
+        out = json.loads(
+            ema_tools.handle_ema_tool(
+                "cancel_appointment",
+                {"appointment_id": 9, "confirmed": True},
+            )
+        )
+    assert out["status"] == "writes_disabled"
+    assert out["error"] == "writes_disabled"
+    assert out["booking_available"] is False
+
+
+def test_ema_tool_book_writes_disabled(monkeypatch):
+    from voice_agent import ema_tools
+
+    ema_tools.clear_flow_cache()
+    monkeypatch.delenv("EMA_WRITES_ENABLED", raising=False)
+    mock_flow = MagicMock()
+    mock_flow.book_appointment.side_effect = WriteGatedError("blocked")
+    with patch.object(ema_tools, "_get_flow", return_value=mock_flow):
+        out = json.loads(
+            ema_tools.handle_ema_tool(
+                "book_appointment",
+                {
+                    "patient_id": 1,
+                    "provider_id": 2,
+                    "facility_id": 3,
+                    "appointment_type_id": 4,
+                    "scheduled_start": "2026-08-01T14:00:00.000Z",
+                    "confirmed": True,
+                },
+            )
+        )
+    assert out["status"] == "writes_disabled"
 
 
 def test_ema_tool_unknown():
@@ -277,7 +548,7 @@ def test_realtime_url_pins_model():
     assert config.GROK_VOICE_MODEL in url or "grok-voice-latest" in url
 
 
-def test_tool_definitions_present():
+def test_tool_definitions_include_gated_writes():
     from voice_agent.ema_tools import EMA_TOOL_DEFINITIONS
 
     names = {t["name"] for t in EMA_TOOL_DEFINITIONS}
@@ -286,5 +557,12 @@ def test_tool_definitions_present():
         "list_upcoming_appointments",
         "list_visit_types",
         "find_open_slots",
+        "book_appointment",
+        "reschedule_appointment",
+        "cancel_appointment",
         "schedule_lookup",
     }
+    for write_name in ("book_appointment", "reschedule_appointment", "cancel_appointment"):
+        tool = next(t for t in EMA_TOOL_DEFINITIONS if t["name"] == write_name)
+        assert "confirmed" in tool["parameters"]["required"]
+
