@@ -132,6 +132,11 @@ SYSTEM_INSTRUCTIONS_SCHEDULING = (
     "5. If none / ambiguous / inactive: apologize and offer a human callback — do not guess charts.\n"
     "6. End warmly. Mention portal forms only if relevant.\n\n"
 
+    "FAQ TOOL: clinic_faq — hours, address, and parking only from clinic config. "
+    "Call it when they ask directions, office hours, or where to park. "
+    "Speak the tool's speak field. Never invent another address, hours, or a named garage. "
+    "Do not use clinic_faq for clinical advice, insurance, lab results, or billing.\n\n"
+
     "STYLE: short, natural, no tool names out loud, no reading JSON, no PHI dumps."
 )
 

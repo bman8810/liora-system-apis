@@ -1,0 +1,25 @@
+{
+  "name": "Liora Dermatology & Aesthetics",
+  "address_line1": "110 E 60th Street",
+  "address_line2": "Suite 800",
+  "city": "New York",
+  "state": "NY",
+  "postal_code": "10022",
+  "address_speak": "110 East 60th Street, Suite 800, New York, New York 10022",
+  "phone": "212-433-4569",
+  "phone_speak": "212-433-4569, that's 212-433-GLOW",
+  "email": "hello@lioradermatology.com",
+  "timezone": "America/New_York",
+  "hours": {
+    "Mon-Thu": "9:00 AM – 6:00 PM",
+    "Fri": "9:00 AM – 4:00 PM",
+    "Sat": "10:00 AM – 4:00 PM",
+    "Sun": "Closed"
+  },
+  "hours_speak": "Monday through Thursday 9 AM to 6 PM, Friday 9 AM to 4 PM, and Saturday 10 AM to 4 PM. We're closed Sunday.",
+  "parking_speak": "There is street parking and nearby public garages around East 60th. We don't validate parking or guarantee a specific garage. We're about two blocks from the 4, 5, and 6 trains at 59th Street.",
+  "transit_speak": "About two blocks from the 4, 5, and 6 at 59th Street.",
+  "source": "lioradermatology.com contact hours/address (public site) + practice flyers; parking is general UES guidance without a named garage",
+  "as_of": "2026-07-28",
+  "barric_confirmed": false
+}
