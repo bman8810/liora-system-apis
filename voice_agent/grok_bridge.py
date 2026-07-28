@@ -59,6 +59,8 @@ class GrokBridge(AIBridge):
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self._running = False
         self._tool_flush_task: Optional[asyncio.Task] = None
+        self._tools_running = 0  # nested function-call depth
+        self._response_active = False
 
         if enable_ema_tools is None:
             try:
@@ -67,6 +69,22 @@ class GrokBridge(AIBridge):
             except Exception:
                 enable_ema_tools = False
         self.enable_ema_tools = bool(enable_ema_tools)
+
+    @property
+    def tool_inflight(self) -> bool:
+        """True while a function call is running or tool-result flush is pending.
+
+        AudioPipeline reads this to defer hard barge-in during tool turns.
+        """
+        flush_pending = (
+            self._tool_flush_task is not None and not self._tool_flush_task.done()
+        )
+        return self._tools_running > 0 or flush_pending
+
+    @property
+    def response_active(self) -> bool:
+        """True between response.created and response.done/cancelled."""
+        return bool(self._response_active)
 
     async def connect(self):
         """Connect to Grok realtime WebSocket."""
@@ -98,10 +116,16 @@ class GrokBridge(AIBridge):
         session: dict = {
             "voice": config.GROK_VOICE,
             "instructions": instructions,
+            # Slightly less sensitive VAD to cut false barge / thrash on
+            # multi-intent (short affirmations, overlapping second asks).
             "turn_detection": {
                 "type": "server_vad",
-                "threshold": 0.3,
-                "silence_duration_ms": 300,
+                "threshold": float(
+                    getattr(config, "GROK_VAD_THRESHOLD", 0.45)
+                ),
+                "silence_duration_ms": int(
+                    getattr(config, "GROK_VAD_SILENCE_MS", 400)
+                ),
             },
             "audio": {
                 "input": {"format": {"type": "audio/pcmu"}},
@@ -204,33 +228,37 @@ class GrokBridge(AIBridge):
 
         logger.info("Grok function call: %s call_id=%s args_keys=%s", name, call_id, list(arguments.keys()))
 
-        # Run blocking tool I/O off the event loop
-        if name in OPS_TOOL_NAMES:
-            output = await asyncio.to_thread(handle_ops_tool, name, arguments)
-        else:
-            output = await asyncio.to_thread(handle_ema_tool, name, arguments)
+        self._tools_running += 1
+        try:
+            # Run blocking tool I/O off the event loop
+            if name in OPS_TOOL_NAMES:
+                output = await asyncio.to_thread(handle_ops_tool, name, arguments)
+            else:
+                output = await asyncio.to_thread(handle_ema_tool, name, arguments)
 
-        if not self.ws:
-            return
+            if not self.ws:
+                return
 
-        await self.ws.send(json.dumps({
-            "type": "conversation.item.create",
-            "item": {
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": output,
-            },
-        }))
-        logger.info("Sent function_call_output for %s (%d chars)", name, len(output))
+            await self.ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output,
+                },
+            }))
+            logger.info("Sent function_call_output for %s (%d chars)", name, len(output))
 
-        # Debounce response.create so parallel tool calls all return first
-        if self._tool_flush_task and not self._tool_flush_task.done():
-            self._tool_flush_task.cancel()
-            try:
-                await self._tool_flush_task
-            except asyncio.CancelledError:
-                pass
-        self._tool_flush_task = asyncio.create_task(self._flush_tool_response())
+            # Debounce response.create so parallel tool calls all return first
+            if self._tool_flush_task and not self._tool_flush_task.done():
+                self._tool_flush_task.cancel()
+                try:
+                    await self._tool_flush_task
+                except asyncio.CancelledError:
+                    pass
+            self._tool_flush_task = asyncio.create_task(self._flush_tool_response())
+        finally:
+            self._tools_running = max(0, self._tools_running - 1)
 
     async def _flush_tool_response(self):
         try:
@@ -281,8 +309,9 @@ class GrokBridge(AIBridge):
             if self.on_speech_stopped:
                 await self.on_speech_stopped()
 
-        elif event_type == "response.done":
-            logger.info("Grok response complete")
+        elif event_type in ("response.done", "response.cancelled", "response.canceled"):
+            logger.info("Grok response complete (%s)", event_type)
+            self._response_active = False
             if self.on_response_done:
                 await self.on_response_done(event)
 
@@ -305,6 +334,7 @@ class GrokBridge(AIBridge):
 
         elif event_type == "response.created":
             logger.info("Grok response created")
+            self._response_active = True
 
         elif event_type in (
             "response.output_item.added",

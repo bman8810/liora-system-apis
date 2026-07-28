@@ -35,6 +35,15 @@ GROK_REALTIME_URL = os.environ.get(
 GROK_VOICE_MODEL = os.environ.get("GROK_VOICE_MODEL", "grok-voice-latest")
 GROK_API_KEY = os.environ.get("XAI_API_KEY", "")
 GROK_VOICE = os.environ.get("GROK_VOICE", "Ara")
+# Server VAD slightly desensitized vs stock 0.3/300 to reduce false barge /
+# thrash on multi-intent (short "yeah"/"ok", overlapping second asks).
+GROK_VAD_THRESHOLD = float(os.environ.get("GROK_VAD_THRESHOLD", "0.45"))
+GROK_VAD_SILENCE_MS = int(os.environ.get("GROK_VAD_SILENCE_MS", "400"))
+
+# --- Turn-taking / barge-in (see voice_agent/turn_taking.py) ---
+# VOICE_BACKCHANNEL_HOLD_MS=450  VOICE_BARGE_DEBOUNCE_MS=350
+# VOICE_MIN_RESPONSE_COMMIT_MS=600  VOICE_TOOL_HOLD_BARGE=true
+# VOICE_HARD_BARGE_ALWAYS=false
 
 # --- ElevenLabs ---
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -131,6 +140,12 @@ SYSTEM_INSTRUCTIONS_SCHEDULING = (
     "Offer only two or three options in plain speech (weekday, time, provider).\n"
     "5. If none / ambiguous / inactive: apologize and offer a human callback — do not guess charts.\n"
     "6. End warmly. Mention portal forms only if relevant.\n\n"
+
+    "TURN-TAKING / MULTI-INTENT:\n"
+    "If the caller stacks a second ask while you are finishing the first, finish the primary "
+    "confirmation first, then address the parked second ask — do not restart the whole flow. "
+    "Short affirmations while you talk (\"yeah\", \"ok\", \"mhmm\") are not a new topic — continue. "
+    "Do not invent transfer behavior beyond what these instructions already allow.\n\n"
 
     "STYLE: short, natural, no tool names out loud, no reading JSON, no PHI dumps.\n\n"
 
