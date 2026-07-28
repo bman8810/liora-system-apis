@@ -1,0 +1,29 @@
+{
+  "messages": [
+    {
+      "thread_id": "thr-list-10",
+      "message_id": "sms-in-10",
+      "timestamp": "2026-07-26T12:00:00Z",
+      "direction": "inbound",
+      "participant_phone": "+13302067819",
+      "participant_name": "Barric Reed",
+      "person_id": "per-barric",
+      "body_preview": "Testing inbound fixture path only",
+      "body": "Testing inbound fixture path only",
+      "source": "fixture",
+      "raw_refs": { "fixture": "normalized_sample" }
+    },
+    {
+      "thread_id": "thr-list-10",
+      "message_id": "sms-out-11",
+      "timestamp": "2026-07-26T11:55:00Z",
+      "direction": "outbound",
+      "participant_phone": "+13302067819",
+      "participant_name": "Barric Reed",
+      "person_id": "per-barric",
+      "body_preview": "Office reply should filter when inbound_only",
+      "body": "Office reply should filter when inbound_only",
+      "source": "fixture"
+    }
+  ]
+}

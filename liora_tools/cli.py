@@ -119,6 +119,61 @@ def weave_list_voicemails(args):
     _output(client.list_voicemails(page_size=args.page_size))
 
 
+def weave_search_messages(args):
+    client = get_client("weave")
+    _output(
+        client.search_messages(
+            args.query,
+            page_size=args.page_size,
+            page_token=args.page_token or None,
+        )
+    )
+
+
+def weave_inbound_poll(args):
+    """Read-only inbound poll/search or fixture replay. Never sends SMS."""
+    from liora_tools.weave.inbound import default_topic_queries, poll_inbound
+
+    queries = list(args.query or [])
+    if getattr(args, "topics", False):
+        queries.extend(default_topic_queries())
+    seen: set[str] = set()
+    q_unique: list[str] = []
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            q_unique.append(q)
+
+    client = None
+    if not args.fixture:
+        client = get_client("weave")
+
+    result = poll_inbound(
+        client,
+        queries=q_unique or None,
+        fixture_path=args.fixture,
+        page_size=args.page_size,
+        max_pages=args.max_pages,
+        allow_list_threads_fallback=bool(args.allow_list_fallback),
+        hydrate=bool(args.hydrate),
+        inbound_only=bool(args.inbound_only),
+        since_iso=args.since or None,
+    )
+    if args.safe:
+        _output(result.to_safe_summary())
+    else:
+        _output(
+            {
+                "source": result.source,
+                "queries_run": result.queries_run,
+                "next_cursors": result.next_cursors,
+                "pages_fetched": result.pages_fetched,
+                "raw_hit_count": result.raw_hit_count,
+                "messages": [m.to_dict() for m in result.messages],
+            }
+        )
+
+
 def weave_dial(args):
     client = get_client("weave")
     result = client.dial(args.phone)
@@ -412,6 +467,60 @@ def build_parser() -> argparse.ArgumentParser:
     p = w.add_parser("list-voicemails", help="List voicemail messages")
     _add_page_size(p)
     p.set_defaults(func=weave_list_voicemails)
+
+    p = w.add_parser(
+        "search-messages",
+        help="Full-text SMS search (primary inbound path; paginated)",
+    )
+    p.add_argument("--query", required=True, help="Search text")
+    p.add_argument("--page-token", default=None, help="nextPageToken from prior page")
+    _add_page_size(p)
+    p.set_defaults(func=weave_search_messages)
+
+    p = w.add_parser(
+        "inbound-poll",
+        help="Normalize inbound via search or --fixture (read-only; no SMS send)",
+    )
+    p.add_argument(
+        "--fixture",
+        default=None,
+        help="Path to canned search/thread JSON (no network)",
+    )
+    p.add_argument(
+        "--query",
+        action="append",
+        default=[],
+        help="search_messages query (repeatable)",
+    )
+    p.add_argument(
+        "--topics",
+        action="store_true",
+        help="Include default_topic_queries()",
+    )
+    p.add_argument(
+        "--allow-list-fallback",
+        action="store_true",
+        help="If search empty, use capped list_threads (explicit opt-in)",
+    )
+    p.add_argument(
+        "--hydrate",
+        action="store_true",
+        help="Expand hits with get_thread for full inbound bodies",
+    )
+    p.add_argument(
+        "--inbound-only",
+        action="store_true",
+        help="Drop clear outbound after normalize (search unknown kept)",
+    )
+    p.add_argument("--since", default=None, help="ISO timestamp lower bound")
+    p.add_argument("--max-pages", type=int, default=10)
+    p.add_argument(
+        "--safe",
+        action="store_true",
+        help="Emit PHI-safe summary only (masked phones)",
+    )
+    _add_page_size(p)
+    p.set_defaults(func=weave_inbound_poll)
 
     p = w.add_parser("dial", help="Initiate an outbound call (safety-guarded)")
     p.add_argument("--phone", required=True, help="Destination phone")

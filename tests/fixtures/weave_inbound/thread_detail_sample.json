@@ -1,0 +1,32 @@
+{
+  "thread": {
+    "id": "thr-hydrate-9",
+    "locationId": "d8508d79-c71c-4678-b139-eaedb19c2159",
+    "personPhone": "+13302067819",
+    "person": {
+      "personId": "per-h9",
+      "firstName": "Casey",
+      "lastName": "Kim"
+    },
+    "items": [
+      {
+        "smsMessage": {
+          "id": "sms-h-out",
+          "body": "Thanks for scheduling with us at Liora.",
+          "direction": "DIRECTION_OUTBOUND",
+          "createdAt": "2026-07-25T10:00:00Z",
+          "personPhone": "+13302067819"
+        }
+      },
+      {
+        "smsMessage": {
+          "id": "sms-h-in",
+          "body": "I finished the portal registration.",
+          "direction": "DIRECTION_INBOUND",
+          "createdAt": "2026-07-25T10:30:00Z",
+          "personPhone": "+13302067819"
+        }
+      }
+    ]
+  }
+}
