@@ -10,19 +10,24 @@ import pytest
 from liora_tools.scripts.zocdoc_new_booking import (
     SMS_FINGERPRINT,
     SMS_TEMPLATE_BODY,
+    SMS_TEMPLATE_ID,
+    SMS_TEMPLATE_NAME,
     JobLock,
     JobStepError,
     StepLedger,
     booking_call_already_requested,
     build_correlation_id,
+    build_sms_body,
     extract_candidates,
     make_step,
     merge_step_lists,
     process_one,
     render_sms,
     step_done,
+    validate_sms_template,
     _mask_email,
     _mask_phone,
+    _patient_gb_payload,
     _redact_error,
 )
 
@@ -113,11 +118,79 @@ def test_render_sms_template():
     assert "{{FIRST_NAME}}" not in body
 
 
+def test_build_sms_ok():
+    body = build_sms_body(SMS_TEMPLATE_BODY, first_name="Alex")
+    assert "Hello Alex" in body
+    assert SMS_FINGERPRINT in body
+    assert "{{" not in body
+    assert "}}" not in body
+    # Constants document the approved template surface
+    assert SMS_TEMPLATE_ID
+    assert SMS_TEMPLATE_NAME == "Genie - New Zocdoc Patient"
+
+
+def test_validate_sms_template_ok():
+    assert validate_sms_template(SMS_TEMPLATE_BODY) == SMS_TEMPLATE_BODY.strip()
+
+
+def test_refuse_missing_fingerprint():
+    bad = "Hello {{FIRST_NAME}}, welcome to Liora."
+    with pytest.raises(ValueError, match="fingerprint"):
+        validate_sms_template(bad)
+    with pytest.raises(ValueError, match="fingerprint"):
+        build_sms_body(bad, first_name="Sam")
+
+
+def test_refuse_unsubstituted_or_unknown_var():
+    # Unknown merge field rejected at validate
+    with_unknown = SMS_TEMPLATE_BODY.replace("{{FIRST_NAME}}", "{{FIRST_NAME}} {{DOB}}")
+    with pytest.raises(ValueError, match="disallowed"):
+        validate_sms_template(with_unknown)
+
+    # Free-form without FIRST_NAME placeholder
+    freeform = (
+        "Hello there,\n\n"
+        "Thanks for scheduling. This message has booking cost of $100 language "
+        "but no merge field."
+    )
+    with pytest.raises(ValueError, match="FIRST_NAME"):
+        build_sms_body(freeform, first_name="Sam")
+
+
+def test_refuse_empty_template():
+    with pytest.raises(ValueError, match="empty"):
+        validate_sms_template("   ")
+
+
 def test_phi_masks():
     assert _mask_phone("2125551212").endswith("1212")
     assert "***" in _mask_email("jane.doe@example.com")
     assert "[email]" in _redact_error("fail for jane@x.com")
     assert "[phone]" in _redact_error("dial +1 212-555-9999 now")
+
+
+def test_redact_secrets():
+    jwt = (
+        "header eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature"
+    )
+    assert "[token]" in _redact_error(jwt)
+    assert "eyJ" not in _redact_error(jwt)
+    assert "Bearer [redacted]" in _redact_error("Authorization Bearer super-secret-value")
+    red = _redact_error("api_key=sk-live-abc password: hunter2 token: xyz")
+    assert "sk-live" not in red
+    assert "hunter2" not in red
+    assert "[redacted]" in red
+
+
+def test_patient_gb_payload_masks_name():
+    payload = _patient_gb_payload("MRN9", "Jane Doe", phone="+12125551212")
+    assert payload["mrn"] == "MRN9"
+    assert payload["name"] == "J*** D***"
+    assert "Jane" not in payload["name"]
+    assert payload.get("phone_last4") == "1212"
+    assert "2125551212" not in str(payload)
+    assert "phone" not in payload or payload.get("phone") is None
 
 
 def test_job_lock_exclusive(tmp_path):

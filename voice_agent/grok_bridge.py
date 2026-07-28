@@ -2,7 +2,7 @@
 
 Connects to Grok's bidirectional audio WebSocket for real-time voice conversation.
 Sends/receives G.711 μ-law audio encoded as base64.
-Supports custom function tools (EMA read-only scheduling).
+Supports custom function tools (EMA read-only scheduling + ops tools).
 """
 
 from __future__ import annotations
@@ -135,8 +135,13 @@ class GrokBridge(AIBridge):
 
         if self.enable_ema_tools:
             from .ema_tools import EMA_TOOL_DEFINITIONS
-            session["tools"] = EMA_TOOL_DEFINITIONS
-            logger.info("EMA read-only tools enabled (%d tools)", len(EMA_TOOL_DEFINITIONS))
+            from .ops_tools import OPS_TOOL_DEFINITIONS
+            session["tools"] = list(EMA_TOOL_DEFINITIONS) + list(OPS_TOOL_DEFINITIONS)
+            logger.info(
+                "EMA + ops tools enabled (%d ema, %d ops)",
+                len(EMA_TOOL_DEFINITIONS),
+                len(OPS_TOOL_DEFINITIONS),
+            )
 
         session_config = {
             "type": "session.update",
@@ -211,6 +216,7 @@ class GrokBridge(AIBridge):
     async def _handle_function_call(self, event: dict):
         """Execute client-side function tool and return output to Grok."""
         from .ema_tools import handle_ema_tool
+        from .ops_tools import OPS_TOOL_NAMES, handle_ops_tool
 
         name = event.get("name") or ""
         call_id = event.get("call_id") or ""
@@ -224,8 +230,11 @@ class GrokBridge(AIBridge):
 
         self._tools_running += 1
         try:
-            # Run blocking EMA I/O off the event loop
-            output = await asyncio.to_thread(handle_ema_tool, name, arguments)
+            # Run blocking tool I/O off the event loop
+            if name in OPS_TOOL_NAMES:
+                output = await asyncio.to_thread(handle_ops_tool, name, arguments)
+            else:
+                output = await asyncio.to_thread(handle_ema_tool, name, arguments)
 
             if not self.ws:
                 return
