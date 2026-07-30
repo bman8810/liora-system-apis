@@ -19,8 +19,10 @@ EMA_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "name": "lookup_patient",
         "description": (
-            "Find a patient in ModMed EMA by name, date of birth, phone, and/or MRN. "
-            "Use before discussing appointments. Prefer last name + DOB. "
+            "Find a patient in ModMed EMA. REQUIRED for outbound: dob (YYYY-MM-DD) "
+            "plus phone (10-digit number dialed). Do NOT pass last_name/first_name "
+            "on the first try when phone is known — names often fail. "
+            "Only add last_name after phone+dob returns none or ambiguous. "
             "Returns match status: matched, none, ambiguous, or inactive."
         ),
         "parameters": {
@@ -156,6 +158,27 @@ def _compact_json(data: Any) -> str:
     return json.dumps(data, default=str, separators=(",", ":"))
 
 
+def _with_outbound_phone(arguments: dict) -> dict:
+    """Inject dialed number when model omits phone on outbound calls."""
+    args = dict(arguments or {})
+    if not args.get("phone"):
+        dial = (os.environ.get("OUTBOUND_DIAL_PHONE") or "").strip()
+        if dial:
+            args["phone"] = dial
+    return args
+
+
+def _prefer_phone_dob(arguments: dict) -> dict:
+    """Strip names when phone+dob present so bad ASR names cannot zero results."""
+    args = dict(arguments or {})
+    phone = (args.get("phone") or "").strip()
+    dob = (args.get("dob") or "").strip()
+    if phone and dob:
+        args["last_name"] = None
+        args["first_name"] = None
+    return args
+
+
 def handle_ema_tool(name: str, arguments: dict) -> str:
     """Execute a read-only EMA tool; return JSON string for Grok."""
     try:
@@ -172,6 +195,15 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
 
     try:
         if name == "lookup_patient":
+            arguments = _prefer_phone_dob(_with_outbound_phone(arguments))
+            logger.info(
+                "lookup_patient keys=%s phone=%s dob=%s name=%s/%s",
+                sorted(k for k, v in arguments.items() if v),
+                bool(arguments.get("phone")),
+                arguments.get("dob"),
+                arguments.get("first_name"),
+                arguments.get("last_name"),
+            )
             result = flow.validate_patient(
                 last_name=arguments.get("last_name"),
                 first_name=arguments.get("first_name"),
@@ -203,6 +235,7 @@ def handle_ema_tool(name: str, arguments: dict) -> str:
                 limit=int(arguments.get("limit") or 5),
             )
         elif name == "schedule_lookup":
+            arguments = _prefer_phone_dob(_with_outbound_phone(arguments))
             result = flow.lookup(
                 last_name=arguments.get("last_name"),
                 first_name=arguments.get("first_name"),
