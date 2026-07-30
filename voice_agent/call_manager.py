@@ -128,10 +128,14 @@ class CallManager:
 
             # Phase 6: Connect to AI backend
             logger.info(f"=== Phase 6: AI Backend ({config.AI_BACKEND}) ===")
-            # Look up patient name from destination number
-            dest_digits = self.destination.lstrip("+1")
+            # Dialed number is the identity key; name is only a soft hint.
+            dest_digits = "".join(c for c in str(self.destination) if c.isdigit())
+            if len(dest_digits) == 11 and dest_digits.startswith("1"):
+                dest_digits = dest_digits[1:]
             patient_name = config.PATIENT_NAMES.get(dest_digits, "the patient")
-            logger.info(f"Patient: {patient_name}")
+            import os
+            os.environ["OUTBOUND_DIAL_PHONE"] = dest_digits
+            logger.info("Patient hint=%s dial_phone=%s", patient_name, dest_digits)
 
             if config.AI_BACKEND == "elevenlabs":
                 from .elevenlabs_bridge import ElevenLabsBridge
@@ -141,7 +145,10 @@ class CallManager:
                 self.bridge = GrokBridge()
 
             await self.bridge.connect()
-            await self.bridge.configure_session(patient_name=patient_name)
+            await self.bridge.configure_session(
+                patient_name=patient_name,
+                dial_phone=dest_digits,
+            )
 
             # Start AI message loop in background
             bridge_task = asyncio.create_task(self.bridge.run())

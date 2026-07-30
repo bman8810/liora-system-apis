@@ -32,17 +32,46 @@ def _phone_digits(phone: str | None) -> str | None:
     if not phone:
         return None
     digits = "".join(c for c in phone if c.isdigit())
-    return digits or None
+    if not digits:
+        return None
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+def _norm_phone(val) -> str:
+    digits = "".join(c for c in str(val or "") if c.isdigit())
+    return digits[-10:] if len(digits) >= 10 else digits
 
 
 def _phone_matches(patient: dict, phone_digits: str) -> bool:
+    want = _norm_phone(phone_digits)
+    if not want:
+        return False
     cell = patient.get("cellPhone") or {}
-    if str(cell.get("phoneNumber", "")).replace("-", "") == phone_digits:
+    if _norm_phone(cell.get("phoneNumber")) == want:
         return True
     for pn in patient.get("phoneNumbers") or []:
-        if str(pn.get("phoneNumber", "")).replace("-", "") == phone_digits:
+        if _norm_phone(pn.get("phoneNumber")) == want:
             return True
     return False
+
+
+def _looks_like_test_patient(patient: dict) -> bool:
+    blob = " ".join(
+        str(patient.get(k) or "")
+        for k in ("lastName", "firstName", "mrn")
+    ).upper()
+    return any(
+        tok in blob
+        for tok in (
+            "TEST",
+            "PHREESIA",
+            "TRAINING",
+            "GALATIQ",
+            "ZZTEST",
+            "DUMMY",
+            "FAKE",
+        )
+    )
 
 
 def _patient_summary(patient: dict) -> dict:
@@ -90,11 +119,19 @@ class SchedulingFlow:
         mrn: str = None,
         page_size: int = 25,
     ) -> dict:
-        """Search patients and classify match quality."""
+        """Search patients and classify match quality.
+
+        Phone is matched client-side (EMA where on phone is flaky). Prefer
+        phone+DOB for voice; drop obvious TEST/PHREESIA charts when multi-match.
+        """
+        phone_digits = _phone_digits(phone)
         clauses = []
-        if last_name:
+        # When phone+dob present, ignore names on the server query — models
+        # often invent display/first names that zero the result set.
+        use_names = not (phone_digits and dob)
+        if use_names and last_name:
             clauses.append(f'lastName=="{last_name}"')
-        if first_name:
+        if use_names and first_name:
             clauses.append(f'firstName=="{first_name}"')
         if mrn:
             clauses.append(f'mrn=="{mrn}"')
@@ -102,7 +139,6 @@ class SchedulingFlow:
             dob_ts = dob if "T" in dob else f"{dob}T00:00:00.000+0000"
             clauses.append(f'dateOfBirth=="{dob_ts}"')
 
-        phone_digits = _phone_digits(phone)
         where = ";".join(clauses) if clauses else None
         fetch_size = 100 if phone_digits else page_size
 
@@ -115,6 +151,11 @@ class SchedulingFlow:
         if phone_digits:
             results = [p for p in results if _phone_matches(p, phone_digits)]
 
+        if len(results) > 1:
+            real = [p for p in results if not _looks_like_test_patient(p)]
+            if real:
+                results = real
+
         results = results[:page_size]
         candidates = [_patient_summary(p) for p in results]
         match_count = len(results)
@@ -126,16 +167,31 @@ class SchedulingFlow:
                 "patient": None,
                 "candidates": [],
                 "message": "No patients matched the given criteria.",
+                "query": {
+                    "used_names": use_names,
+                    "had_phone": bool(phone_digits),
+                    "had_dob": bool(dob),
+                },
             }
 
-        # EMA often omits patientStatus on list/get; treat missing/empty as schedulable.
-        def _is_active(p: dict) -> bool:
+        def _is_schedulable(p: dict) -> bool:
             st = (p.get("patientStatus") or "").strip().upper()
             if not st:
                 return True
+            if st in {"INACTIVE", "DECEASED", "MERGED", "DELETED"}:
+                return False
             return st == "ACTIVE"
 
-        active = [p for p in results if _is_active(p)]
+        if match_count == 1 and _is_schedulable(results[0]):
+            return {
+                "status": "matched",
+                "match_count": 1,
+                "patient": _patient_summary(results[0]),
+                "candidates": candidates,
+                "message": "Single patient matched.",
+            }
+
+        active = [p for p in results if _is_schedulable(p)]
         if len(active) == 1:
             return {
                 "status": "matched",
@@ -153,7 +209,6 @@ class SchedulingFlow:
                 "message": f"{len(active)} active patients matched; need more criteria.",
             }
 
-        # Zero ACTIVE — only inactive / other statuses
         if match_count == 1:
             return {
                 "status": "inactive",

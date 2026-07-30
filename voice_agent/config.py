@@ -18,7 +18,7 @@ LOCATION_ID = "d8508d79-c71c-4678-b139-eaedb19c2159"
 TENANT_ID = "1cdad4ca-9dbe-45f2-8263-c998c1dfec98"
 USER_ID = "8b835d4b-d6b3-4e81-a204-6ac39835ba2b"
 SOFTPHONE_ID = "dd2b2484-f5f0-43d2-8029-9a140f958fed"
-SIP_PROFILE_ID = "c6d657dc-fbdd-47bd-b6e6-bc055dcd3346"
+SIP_PROFILE_ID = os.environ.get("WEAVE_SIP_PROFILE_ID", "2d99f557-a65a-4148-9a72-9c645017eeda")  # 7002 Barric softphone
 
 # --- SIP ---
 SIP_WS_URL = "wss://sip-websockets-glb.us1.weavephone.net"
@@ -63,6 +63,10 @@ PATIENT_NAMES = {
     "3302067819": "Barric (pronounced bear-ick)",
     "9179401010": "Libby",
     "9179415577": "Jenny",
+}
+# Chart hints by dialed number — never treat softphone display name as last name.
+DIAL_CHART_HINTS = {
+    "3302067819": {"last_name": "Reed", "first_name": "Barric"},
 }
 FROM_NUMBER = "2124334569"
 FROM_NAME = "Liora Dermatology & Aesthetics"
@@ -115,7 +119,16 @@ SYSTEM_INSTRUCTIONS_SCHEDULING = (
     "Warm, short phone turns. One or two sentences. Doctor: Dr. Rhee. "
     "Office: 110 East 60th Street, Suite 800, New York, NY 10022. Timezone America/New_York.\n\n"
 
-    "Caller context name hint (may be wrong): {patient_name}.\n\n"
+    "IDENTITY FIRST (outbound): We dialed {dial_phone}. "
+    "Name hint may be wrong — never use the softphone display name as last name. "
+    "Do not ask them to spell a name on the first try.\n"
+    "1. After hello: 'Hi, it's Genie from Liora Dermatology.'\n"
+    "2. Ask for date of birth only.\n"
+    "3. Call lookup_patient with dob=YYYY-MM-DD and phone={dial_phone}. "
+    "Do not pass last_name or first_name on that first call.\n"
+    "4. matched: confirm first name lightly. none/ambiguous: ask last name once, retry. "
+    "Still unmatched: no chart details — offer staff callback.\n"
+    "5. Never read chart or appointment details before a matched lookup.\n\n"
 
     "YOU HAVE READ-ONLY SCHEDULING TOOLS (ModMed EMA). Use them — do not invent appointments or times.\n"
     "Tools: lookup_patient, list_upcoming_appointments, list_visit_types, find_open_slots, schedule_lookup.\n"
@@ -123,14 +136,10 @@ SYSTEM_INSTRUCTIONS_SCHEDULING = (
     "If they want a change, collect the preferred option and say staff will confirm it — "
     "or offer to transfer. Never claim you already moved a visit.\n\n"
 
-    "FLOW:\n"
-    "1. Greet per call direction rules from the system (inbound: greet first; outbound: wait for hello).\n"
-    "2. Identify the patient: full name + date of birth (and phone if needed). Call lookup_patient or schedule_lookup.\n"
-    "3. If matched: summarize upcoming visits with list_upcoming_appointments or schedule_lookup.\n"
-    "4. If they want a new time or have none: ask what kind of visit → list_visit_types → find_open_slots. "
-    "Offer only two or three options in plain speech (weekday, time, provider).\n"
-    "5. If none / ambiguous / inactive: apologize and offer a human callback — do not guess charts.\n"
-    "6. End warmly. Mention portal forms only if relevant.\n\n"
+    "AFTER MATCH:\n"
+    "6. Upcoming: list_upcoming_appointments. "
+    "7. New time: list_visit_types → find_open_slots — offer at most three options.\n"
+    "8. End warmly. Mention portal forms only if relevant.\n\n"
 
     "STYLE: short, natural, no tool names out loud, no reading JSON, no PHI dumps.\n\n"
 
