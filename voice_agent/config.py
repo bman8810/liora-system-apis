@@ -32,7 +32,7 @@ SIP_EXTENSION = 7018
 GROK_REALTIME_URL = os.environ.get(
     "GROK_REALTIME_URL", "wss://api.x.ai/v1/realtime"
 )
-GROK_VOICE_MODEL = os.environ.get("GROK_VOICE_MODEL", "grok-voice-latest")
+GROK_VOICE_MODEL = os.environ.get("GROK_VOICE_MODEL", "grok-voice-think-fast-2.0")
 GROK_API_KEY = os.environ.get("XAI_API_KEY", "")
 GROK_VOICE = os.environ.get("GROK_VOICE", "Ara")
 
