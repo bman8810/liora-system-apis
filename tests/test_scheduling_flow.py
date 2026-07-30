@@ -274,7 +274,7 @@ def test_realtime_url_pins_model():
 
     url = _realtime_url()
     assert "model=" in url
-    assert config.GROK_VOICE_MODEL in url or "grok-voice-latest" in url
+    assert config.GROK_VOICE_MODEL in url or "grok-voice-think-fast-2.0" in url
 
 
 def test_tool_definitions_present():

@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 
 def _realtime_url() -> str:
-    """Ensure model=grok-voice-latest is on the WS URL."""
+    """Ensure model=grok-voice-think-fast-2.0 is on the WS URL."""
     base = config.GROK_REALTIME_URL or "wss://api.x.ai/v1/realtime"
-    model = getattr(config, "GROK_VOICE_MODEL", None) or "grok-voice-latest"
+    model = getattr(config, "GROK_VOICE_MODEL", None) or "grok-voice-think-fast-2.0"
     parts = urlparse(base)
     q = dict(parse_qsl(parts.query, keep_blank_values=True))
     q.setdefault("model", model)

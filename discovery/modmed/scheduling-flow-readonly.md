@@ -56,7 +56,7 @@ python -m liora_tools ema visit-types
 |-----|---------|
 | `EMA_VOICE_TOOLS` | `1` (set `0` to disable tools / use scripted prompt) |
 | `AI_BACKEND` | `grok` |
-| `GROK_VOICE_MODEL` | `grok-voice-latest` |
+| `GROK_VOICE_MODEL` | `grok-voice-think-fast-2.0` |
 | `EMA_WRITES_ENABLED` | off |
 
 Tools registered on `session.update`: `lookup_patient`, `list_upcoming_appointments`, `list_visit_types`, `find_open_slots`, `schedule_lookup`.  
