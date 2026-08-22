@@ -74,11 +74,11 @@ class EmaClient:
         return r
 
     def _check_response(self, r: requests.Response) -> None:
-        if r.status_code == 302:
+        if r.status_code in (301, 302, 303, 307, 308):
             location = r.headers.get("Location", "")
             raise AuthenticationError(
-                f"EMA session expired (302 redirect to {location})",
-                status_code=302, response=r,
+                f"EMA session expired or wrong host ({r.status_code} → {location})",
+                status_code=r.status_code, response=r,
             )
         if r.status_code == 429:
             raise RateLimitError("EMA rate limit exceeded", status_code=429, response=r)
@@ -323,8 +323,9 @@ class EmaClient:
     def find_slots(self, appt_type_id: str, duration: int = 15,
                    time_of_day: str = "ANYTIME", specific_date: str = None,
                    time_frame: str = "FIRST_AVAILABLE",
-                   display: str = "BY_PROVIDER") -> list:
-        """Find available appointment slots."""
+                   display: str = "BY_PROVIDER",
+                   provider_id: str | None = None, location_id: str | None = None) -> list:
+        """Find available appointment slots (same data as Expanded Finder)."""
         params = {
             "apptTypeId": str(appt_type_id),
             "duration": str(duration),
@@ -338,7 +339,56 @@ class EmaClient:
         }
         if specific_date:
             params["specificDate"] = f"{specific_date}T00:00:00.000Z"
+        if provider_id or self._cfg.provider_id:
+            params["providerId"] = provider_id or self._cfg.provider_id
+        if location_id or self._cfg.facility_id:
+            params["locationId"] = location_id or self._cfg.facility_id
         return self._get("/ema/ws/v2/appointment/finder", params).json()
+
+    def list_scheduler_appointments(
+        self,
+        start_iso: str,
+        end_iso: str,
+        provider_id: str | None = None,
+        facility_id: str | None = None,
+        statuses: str = 'PENDING","CONFIRMED","ARRIVED","CHECKED_IN","CHECKED_OUT',
+        page_size: int = 100,
+        extra_selector: str = "",
+    ) -> list:
+        """Week/day census used by intake_watch and desk offers."""
+        fac = facility_id or self._cfg.facility_id
+        prov = provider_id or self._cfg.provider_id
+        selector = (
+            "id,status,dateCreated,createdBy,newPatient,scheduledStartDate,"
+            "scheduledEndDate,appointmentType,notes,displayStartTime,displayStartDate,"
+            "patient(id,firstName,lastName,dateOfBirth,email,preferredPhone,cellPhone)"
+        )
+        if extra_selector:
+            selector += "," + extra_selector
+        where = (
+            f'facility=in=("{fac}") and provider=in=("{prov}") '
+            f'and scheduledStartDate>="{start_iso}" '
+            f'and scheduledEndDate<="{end_iso}" '
+            f'and status=in=("{statuses}")'
+        )
+        return self._get("/ema/ws/v3/scheduler/appointments", {
+            "paging.pageNumber": "1",
+            "paging.pageSize": str(page_size),
+            "paging.usingEstimate": "true",
+            "selector": selector,
+            "where": where,
+        }).json()
+
+    def list_attachments(self, patient_id: int | str, page_size: int = 10) -> list:
+        return self._get(f"/ema/ws/v3/fileAttachment/manage/patient/{patient_id}", {
+            "paging.pageNumber": "1",
+            "paging.pageSize": str(page_size),
+            "patientId": str(patient_id),
+            "selector": "encryptedId,id,title,fileName,dateCreated,origDateUploaded,firmCategoryTab",
+            "sorting.sortBy": "dateUploaded",
+            "sorting.sortOrder": "desc",
+            "where": f'patient=="{patient_id}"',
+        }).json()
 
     # -- Reference Data --
 

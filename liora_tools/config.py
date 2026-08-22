@@ -40,7 +40,7 @@ class WeaveConfig:
 
 @dataclass
 class EmaConfig:
-    # Kernel Managed Auth / production cookies use modmedapp.com (legacy: ema.md).
+    # Live host. Old lioraderm.ema.md 308s here and breaks allow_redirects=False.
     # Override with EMA_BASE_URL or credential file base_url from kernel_bridge.
     base_url: str = field(
         default_factory=lambda: os.environ.get(
@@ -49,6 +49,7 @@ class EmaConfig:
     )
     cookie_file: str = "ema_cookies.json"
     facility_id: str = "2040"
+    provider_id: str = "8327689"
 
 
 @dataclass

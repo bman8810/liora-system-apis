@@ -1,12 +1,13 @@
 # ModMed EMA API Reference
 
-> Reverse-engineered from `lioraderm.ema.md` (EMA v7.13.1.5, revision 9587b402ed)
-> Generated: 2026-03-12
+> Reverse-engineered from Liora prod EMA. **Live host (2026-08): `lioraderm.modmedapp.com`.**
+> `lioraderm.ema.md` still 308-redirects there — do not use it as `base_url` (client sets `allow_redirects=False`).
+> Original capture: v7.13.1.5 / 2026-03-12. Current practice: v7.15.0.2.
 
 ## Base URL
 
 ```
-https://lioraderm.ema.md/ema/ws/
+https://lioraderm.modmedapp.com/ema/ws/
 ```
 
 Two API versions are in use: `v2` (older, supports writes) and `v3` (newer, mostly read-only).

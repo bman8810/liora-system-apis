@@ -34,7 +34,7 @@ def login_browser(username: str = None, password: str = None) -> list:
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
 
-        page.goto(f"{config.base_url}/ema/Login.action", wait_until="networkidle")
+        page.goto(f"{config.base_url}/ema/web/auth/login/", wait_until="networkidle")
         page.wait_for_selector("text=Continue as Practice Staff", timeout=15000)
         page.click("text=Continue as Practice Staff")
         page.wait_for_selector("#username", timeout=15000)
@@ -75,7 +75,7 @@ def refresh_via_keycloak(cookies: list) -> list | None:
         sso_cookies = [c for c in cookies if "sso.ema.md" in c.get("domain", "")]
         context.add_cookies(sso_cookies)
 
-        page.goto(f"{config.base_url}/ema/Login.action", wait_until="networkidle")
+        page.goto(f"{config.base_url}/ema/web/auth/login/", wait_until="networkidle")
 
         staff_btn = page.query_selector("text=Continue as Practice Staff")
         if staff_btn:
