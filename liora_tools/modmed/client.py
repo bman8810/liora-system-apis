@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import requests
 
 from liora_tools.config import EmaConfig
@@ -388,6 +390,56 @@ class EmaClient:
             "sorting.sortBy": "dateUploaded",
             "sorting.sortOrder": "desc",
             "where": f'patient=="{patient_id}"',
+        }).json()
+
+    def upload_attachment(
+        self,
+        patient_id: int | str,
+        pdf_bytes: bytes,
+        file_name: str,
+        title: str,
+        category_id: int = 16042,
+    ) -> dict:
+        """Staff REST upload + Consent category. Verify with list_attachments."""
+        dto = [{
+            "fileName": file_name,
+            "fileType": "F",
+            "title": title,
+            "fileSize": len(pdf_bytes),
+            "patient": {"id": int(patient_id)},
+        }]
+        r = self._s.post(
+            f"{self._cfg.base_url}/ema/ws/v3/fileAttachment/upload/attachments",
+            params={
+                "mapId": "MANAGE_ATTACHMENT",
+                "selector": "id,title,fileName,filePath,encryptedId,dateCreated,patient",
+            },
+            files={
+                "files": (file_name, pdf_bytes, "application/pdf"),
+                "dtoList": ("dto.json", json.dumps(dto), "application/json"),
+            },
+            allow_redirects=False,
+        )
+        self._check_response(r)
+        rows = r.json()
+        att = rows[0] if isinstance(rows, list) else rows
+        att_id = att.get("id")
+        if att_id and category_id:
+            self.set_attachment_category(att_id, patient_id, title, category_id)
+        return att
+
+    def set_attachment_category(
+        self,
+        attachment_id: int | str,
+        patient_id: int | str,
+        title: str,
+        category_id: int = 16042,
+    ) -> dict:
+        return self._post("/ema/ws/v3/fileAttachment/manage", {
+            "id": int(attachment_id),
+            "title": title,
+            "patient": {"id": int(patient_id)},
+            "firmCategoryTab": {"id": int(category_id)},
         }).json()
 
     # -- Reference Data --
