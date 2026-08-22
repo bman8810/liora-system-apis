@@ -444,6 +444,15 @@ class EmaClient:
 
     # -- Reference Data --
 
+    def list_patient_appointments(self, patient_id: int | str, page_size: int = 50) -> list:
+        return self._get("/ema/ws/v3/scheduler/appointments", {
+            "paging.pageNumber": "1",
+            "paging.pageSize": str(page_size),
+            "paging.usingEstimate": "true",
+            "selector": "id,status,scheduledStartDate,scheduledEndDate,appointmentType,newPatient",
+            "where": f'patient=="{patient_id}"',
+        }).json()
+
     def list_appointment_types(self, page_size: int = 100) -> list:
         return self._get("/ema/ws/v3/appointmentType", {
             "paging.pageSize": str(page_size),
